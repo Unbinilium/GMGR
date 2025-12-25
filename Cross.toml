@@ -1,0 +1,6 @@
+[build]
+pre-build = "./setup-libgpiod.sh"
+
+[build.env]
+passthrough = ["LIBGPIOD_STATIC"]
+LIBGPIOD_STATIC = "1"

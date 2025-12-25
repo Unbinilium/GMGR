@@ -1,0 +1,41 @@
+{
+    "http": {
+        "host": "localhost",
+        "port": 8080,
+        "path": "/api/v1",
+        "timeout": 30
+    },
+    "gpios": {
+        "1": {
+            "name": "LED 1",
+            "chip": "/dev/gpiochip0",
+            "line": 2,
+            "capabilities": [
+                "push-pull"
+            ]
+        },
+        "2": {
+            "name": "BUTTON 1",
+            "chip": "/dev/gpiochip0",
+            "line": 3,
+            "capabilities": [
+                "floating",
+                "pull-up",
+                "pull-down"
+            ]
+        },
+        "42": {
+            "name": "General IO 1",
+            "chip": "/dev/gpiochip1",
+            "line": 5,
+            "capabilities": [
+                "push-pull",
+                "open-drain",
+                "open-source",
+                "floating",
+                "pull-up",
+                "pull-down"
+            ]
+        }
+    }
+}

@@ -34,12 +34,18 @@ impl GpioState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PinDescriptor {
+pub struct PinInfo {
+    #[serde(skip_serializing)]
     pub id: String,
     pub name: String,
     pub chip: String,
     pub line: u32,
     pub capabilities: Vec<GpioCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinDescriptor {
+    pub info: PinInfo,
     pub state: GpioState,
 }
 
@@ -409,25 +415,40 @@ impl GpioManager {
             .gpios
             .iter()
             .map(|(id, cfg)| PinDescriptor {
-                id: id.clone(),
-                name: cfg.name.clone(),
-                chip: cfg.chip.clone(),
-                line: cfg.line,
-                capabilities: cfg.capabilities.clone(),
+                info: PinInfo {
+                    id: id.clone(),
+                    name: cfg.name.clone(),
+                    chip: cfg.chip.clone(),
+                    line: cfg.line,
+                    capabilities: cfg.capabilities.clone(),
+                },
                 state: self.backend.get_state(id).unwrap_or(GpioState::Error),
             })
             .collect()
     }
 
-    pub async fn get_pin_info(&self, pin_id: &str) -> Result<PinDescriptor, AppError> {
+    pub async fn get_pin_descriptor(&self, pin_id: &str) -> Result<PinDescriptor, AppError> {
         let cfg = self.pin_config(pin_id)?.clone();
         Ok(PinDescriptor {
+            info: PinInfo {
+                id: pin_id.to_string(),
+                name: cfg.name,
+                chip: cfg.chip,
+                line: cfg.line,
+                capabilities: cfg.capabilities,
+            },
+            state: self.backend.get_state(pin_id).unwrap_or(GpioState::Error),
+        })
+    }
+
+    pub async fn get_pin_info(&self, pin_id: &str) -> Result<PinInfo, AppError> {
+        let cfg = self.pin_config(pin_id)?.clone();
+        Ok(PinInfo {
             id: pin_id.to_string(),
             name: cfg.name,
             chip: cfg.chip,
             line: cfg.line,
             capabilities: cfg.capabilities,
-            state: self.backend.get_state(pin_id).unwrap_or(GpioState::Error),
         })
     }
 

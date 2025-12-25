@@ -10,6 +10,7 @@
 [Test]
     cargo test
     curl -X GET http://localhost:8080/api/v1/gpios
+    curl -X GET http://localhost:8080/api/v1/gpio/1
     curl -X GET http://localhost:8080/api/v1/gpio/1/info
     curl -X GET http://localhost:8080/api/v1/gpio/1/state
     curl -X POST http://localhost:8080/api/v1/gpio/1/state -d push-pull
@@ -20,11 +21,11 @@
     Edit the config.json file to set up GPIO pins and server settings.
 
 [REST-API]
-    /gpios - GET: list all GPIO pins and their states in JSON format.
-    /gpio/{pin_id}
-        /info - GET: get detailed information about a specific GPIO pin in JSON format.
-        /state - GET/POST: get/set the current state of the GPIO pin, e.g., push-pull, floating, etc.
-        /value - GET/POST: get/set the value of the GPIO pin, e.g., 0 or 1.
+    /gpios - GET: list all pins with their full description
+    /gpio/{pin_id} - GET: get pin full description
+        /info - GET: get pin information
+        /state - GET/POST: get/set the current state
+        /value - GET/POST: get/set the value
 
 [Cross-Building]
     cargo install cross --git https://github.com/cross-rs/cross

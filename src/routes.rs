@@ -21,6 +21,15 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
                 ),
         )
         .service(
+            web::resource("/gpio/{pin_id}")
+                .route(web::get().to(pin_descriptor))
+                .route(
+                    web::route()
+                        .guard(guard_not_methods(&[Method::GET]))
+                        .to(method_not_allowed),
+                ),
+        )
+        .service(
             web::resource("/gpio/{pin_id}/info")
                 .route(web::get().to(pin_info))
                 .route(
@@ -53,9 +62,23 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
 
 async fn list_gpios(state: web::Data<AppState>) -> Result<impl Responder, AppError> {
     let pins = state.manager.list_pins().await;
-    let response: HashMap<String, PinDescriptor> =
-        pins.into_iter().map(|p| (p.id.clone(), p)).collect();
+    let response: HashMap<String, PinDescriptor> = pins
+        .into_iter()
+        .map(|p| (p.info.id.to_string(), p))
+        .collect();
     Ok(web::Json(response))
+}
+
+async fn pin_descriptor(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<impl Responder, AppError> {
+    let pin_id = req
+        .match_info()
+        .get("pin_id")
+        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let desc = state.manager.get_pin_descriptor(pin_id).await?;
+    Ok(web::Json(desc))
 }
 
 async fn pin_info(
@@ -67,11 +90,7 @@ async fn pin_info(
         .get("pin_id")
         .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
     let info = state.manager.get_pin_info(pin_id).await?;
-    let body = serde_json::to_string(&info)
-        .map_err(|e| AppError::Gpio(format!("serialize pin info: {e}")))?;
-    Ok(HttpResponse::Ok()
-        .content_type("text/plain; charset=utf-8")
-        .body(body))
+    Ok(web::Json(info))
 }
 
 async fn get_state(

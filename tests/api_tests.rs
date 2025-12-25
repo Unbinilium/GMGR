@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use actix_web::{App, test, web};
 use gmgr::config::AppConfig;
-use gmgr::gpio::{GpioBackend, GpioManager, MockGpioBackend, PinDescriptor};
+use gmgr::gpio::{GpioBackend, GpioManager, MockGpioBackend};
 use gmgr::routes::{AppState, api_scope};
+use serde_json::Value;
 
 fn sample_config() -> AppConfig {
     serde_json::from_str(
@@ -70,9 +71,17 @@ async fn list_gpios_returns_all() {
     )
     .await;
     let req = test::TestRequest::get().uri("/api/v1/gpios").to_request();
-    let response: HashMap<String, PinDescriptor> = test::call_and_read_body_json(&app, req).await;
+    let response: HashMap<String, Value> = test::call_and_read_body_json(&app, req).await;
     assert_eq!(response.len(), 3);
     assert!(response.contains_key("1"));
+
+    let led = response.get("1").unwrap();
+    assert_eq!(led["state"], "disabled");
+    let info = &led["info"];
+    assert_eq!(info["name"], "LED 1");
+    assert_eq!(info["chip"], "/dev/gpiochip0");
+    assert_eq!(info["line"], 2);
+    assert!(info.get("id").is_none());
 }
 
 #[actix_rt::test]
@@ -195,12 +204,38 @@ async fn get_pin_info_happy_path() {
     let req = test::TestRequest::get()
         .uri("/api/v1/gpio/1/info")
         .to_request();
-    let resp: PinDescriptor = test::call_and_read_body_json(&app, req).await;
+    let resp: Value = test::call_and_read_body_json(&app, req).await;
 
-    assert_eq!(resp.id, "1");
-    assert_eq!(resp.name, "LED 1");
-    assert_eq!(resp.chip, "/dev/gpiochip0");
-    assert_eq!(resp.line, 2);
+    assert!(resp.get("id").is_none());
+    assert_eq!(resp["name"], "LED 1");
+    assert_eq!(resp["chip"], "/dev/gpiochip0");
+    assert_eq!(resp["line"], 2);
+}
+
+#[actix_rt::test]
+async fn get_pin_info_alias_happy_path() {
+    let cfg = Arc::new(sample_config());
+    let backend: Arc<dyn GpioBackend> = Arc::new(MockGpioBackend::default());
+    let manager = Arc::new(GpioManager::new(cfg.clone(), backend));
+    let state = AppState { manager };
+    let scope_path = cfg.http.path.clone();
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .service(api_scope(&scope_path)),
+    )
+    .await;
+
+    let req = test::TestRequest::get().uri("/api/v1/gpio/1").to_request();
+    let resp: Value = test::call_and_read_body_json(&app, req).await;
+
+    assert_eq!(resp["state"], "disabled");
+    let info = &resp["info"];
+    assert_eq!(info["name"], "LED 1");
+    assert_eq!(info["chip"], "/dev/gpiochip0");
+    assert_eq!(info["line"], 2);
+    assert!(info.get("id").is_none());
 }
 
 #[actix_rt::test]

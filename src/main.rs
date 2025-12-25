@@ -3,13 +3,13 @@ use std::sync::Arc;
 use actix_web::{App, HttpServer, web};
 
 use gmgr::config::AppConfig;
-#[cfg(not(feature = "hardware-gpio"))]
-use gmgr::gpio::MockGpioBackend;
 use gmgr::gpio::{GpioBackend, GpioManager};
 use gmgr::routes::{AppState, api_scope};
 
 #[cfg(feature = "hardware-gpio")]
 use gmgr::gpio::LibgpiodBackend;
+#[cfg(not(feature = "hardware-gpio"))]
+use gmgr::gpio::MockGpioBackend;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -27,7 +27,6 @@ async fn main() -> std::io::Result<()> {
                     .unwrap_or_else(|e| panic!("failed to init libgpiod backend: {e}")),
             )
         }
-
         #[cfg(not(feature = "hardware-gpio"))]
         {
             Arc::new(MockGpioBackend::default())

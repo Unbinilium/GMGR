@@ -2,12 +2,12 @@ use crate::config::{AppConfig, GpioCapability, PinConfig};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[cfg(feature = "hardware-gpio")]
-use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(feature = "hardware-gpio")]
 use libgpiod::{chip::Chip, line, request};
+#[cfg(feature = "hardware-gpio")]
+use std::collections::hash_map::Entry;
 #[cfg(feature = "hardware-gpio")]
 use std::path::PathBuf;
 

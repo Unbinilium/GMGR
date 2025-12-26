@@ -1,4 +1,5 @@
 use actix_web::{HttpResponse, ResponseError, http::StatusCode};
+use serde_json::json;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -28,6 +29,6 @@ impl ResponseError for AppError {
     }
 
     fn error_response(&self) -> HttpResponse {
-        HttpResponse::build(self.status_code()).body(self.to_string())
+        HttpResponse::build(self.status_code()).json(json!({ "error": self.to_string() }))
     }
 }

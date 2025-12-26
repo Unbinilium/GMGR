@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web::{App, test, web};
+use gmgr::backend::MockGpioBackend;
 use gmgr::config::AppConfig;
-use gmgr::gpio::{GpioBackend, GpioManager, MockGpioBackend};
+use gmgr::gpio::{GpioBackend, GpioManager};
 use gmgr::routes::{AppState, api_scope};
 use serde_json::Value;
 
@@ -76,12 +77,11 @@ async fn list_gpios_returns_all() {
     assert!(response.contains_key("1"));
 
     let led = response.get("1").unwrap();
-    assert_eq!(led["state"], "disabled");
-    let info = &led["info"];
-    assert_eq!(info["name"], "LED 1");
-    assert_eq!(info["chip"], "/dev/gpiochip0");
-    assert_eq!(info["line"], 2);
-    assert!(info.get("id").is_none());
+    assert_eq!(led["settings"]["state"], "disabled");
+    let cfg = &led["info"];
+    assert_eq!(cfg["name"], "LED 1");
+    assert_eq!(cfg["chip"], "/dev/gpiochip0");
+    assert_eq!(cfg["line"], 2);
 }
 
 #[actix_rt::test]
@@ -143,8 +143,8 @@ async fn set_state_and_value_happy_path() {
     .await;
 
     let req = test::TestRequest::post()
-        .uri("/api/v1/gpio/1/state")
-        .set_payload("push-pull")
+        .uri("/api/v1/gpio/1/settings")
+        .set_payload(r#"{"state":"push-pull"}"#)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
@@ -206,7 +206,6 @@ async fn get_pin_info_happy_path() {
         .to_request();
     let resp: Value = test::call_and_read_body_json(&app, req).await;
 
-    assert!(resp.get("id").is_none());
     assert_eq!(resp["name"], "LED 1");
     assert_eq!(resp["chip"], "/dev/gpiochip0");
     assert_eq!(resp["line"], 2);
@@ -230,12 +229,11 @@ async fn get_pin_info_alias_happy_path() {
     let req = test::TestRequest::get().uri("/api/v1/gpio/1").to_request();
     let resp: Value = test::call_and_read_body_json(&app, req).await;
 
-    assert_eq!(resp["state"], "disabled");
-    let info = &resp["info"];
-    assert_eq!(info["name"], "LED 1");
-    assert_eq!(info["chip"], "/dev/gpiochip0");
-    assert_eq!(info["line"], 2);
-    assert!(info.get("id").is_none());
+    assert_eq!(resp["settings"]["state"], "disabled");
+    let cfg = &resp["info"];
+    assert_eq!(cfg["name"], "LED 1");
+    assert_eq!(cfg["chip"], "/dev/gpiochip0");
+    assert_eq!(cfg["line"], 2);
 }
 
 #[actix_rt::test]
@@ -255,23 +253,21 @@ async fn get_state_happy_path() {
 
     // Default state is disabled
     let req = test::TestRequest::get()
-        .uri("/api/v1/gpio/1/state")
+        .uri("/api/v1/gpio/1/settings")
         .to_request();
-    let body = test::call_and_read_body(&app, req).await;
-    assert_eq!(body, "disabled");
+    let settings: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(settings["state"], "disabled");
 
-    // Set state to push-pull
     let req = test::TestRequest::post()
-        .uri("/api/v1/gpio/1/state")
-        .set_payload("push-pull")
+        .uri("/api/v1/gpio/1/settings")
+        .set_payload(r#"{"state":"push-pull"}"#)
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
 
-    // Check state is push-pull
     let req = test::TestRequest::get()
-        .uri("/api/v1/gpio/1/state")
+        .uri("/api/v1/gpio/1/settings")
         .to_request();
-    let body = test::call_and_read_body(&app, req).await;
-    assert_eq!(body, "push-pull");
+    let settings: Value = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(settings["state"], "push-pull");
 }

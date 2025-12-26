@@ -21,6 +21,21 @@ pub enum GpioCapability {
     PullDown,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EdgeDetect {
+    None,
+    Rising,
+    Falling,
+    Both,
+}
+
+impl Default for EdgeDetect {
+    fn default() -> Self {
+        EdgeDetect::None
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PinConfig {
     pub name: String,

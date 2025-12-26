@@ -1,15 +1,15 @@
-use crate::config::{AppConfig, GpioCapability, PinConfig};
+use crate::config::{AppConfig, EdgeDetect, GpioCapability, PinConfig};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, RwLock};
+
+use tokio::sync::broadcast;
 
 #[cfg(feature = "hardware-gpio")]
-use libgpiod::{chip::Chip, line, request};
-#[cfg(feature = "hardware-gpio")]
-use std::collections::hash_map::Entry;
-#[cfg(feature = "hardware-gpio")]
-use std::path::PathBuf;
+pub use crate::backend::LibgpiodBackend;
+#[cfg(not(feature = "hardware-gpio"))]
+pub use crate::backend::MockGpioBackend;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -31,363 +31,85 @@ impl GpioState {
             GpioState::PushPull | GpioState::OpenDrain | GpioState::OpenSource
         )
     }
+
+    pub fn is_edge_detectable(&self) -> bool {
+        matches!(
+            self,
+            GpioState::Floating | GpioState::PullUp | GpioState::PullDown
+        )
+    }
+}
+
+pub type EdgeCallback = Arc<dyn Fn(EdgeEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EdgeEvent {
+    pub pin_id: String,
+    pub edge: EdgeDetect,
+    pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PinInfo {
-    #[serde(skip_serializing)]
-    pub id: String,
-    pub name: String,
-    pub chip: String,
-    pub line: u32,
-    pub capabilities: Vec<GpioCapability>,
+pub struct PinSettings {
+    pub state: GpioState,
+    pub edge: EdgeDetect,
+    pub debounce_ms: u64,
+}
+
+impl Default for PinSettings {
+    fn default() -> Self {
+        Self {
+            state: GpioState::Disabled,
+            edge: EdgeDetect::None,
+            debounce_ms: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinDescriptor {
-    pub info: PinInfo,
-    pub state: GpioState,
+    pub info: PinConfig,
+    pub settings: PinSettings,
 }
 
 pub trait GpioBackend: Send + Sync {
-    fn get_state(&self, pin_id: &str) -> Result<GpioState, AppError>;
-    fn set_state(&self, pin_id: &str, pin: &PinConfig, state: GpioState) -> Result<(), AppError>;
+    fn get_settings(&self, pin_id: &str) -> Result<PinSettings, AppError>;
+
+    fn set_settings(
+        &self,
+        pin_id: &str,
+        pin: &PinConfig,
+        settings: &PinSettings,
+        event_callback: Option<EdgeCallback>,
+    ) -> Result<(), AppError>;
+
     fn read_value(&self, pin_id: &str) -> Result<u8, AppError>;
+
     fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError>;
 }
 
-#[derive(Default)]
-pub struct MockGpioBackend {
-    pins: RwLock<HashMap<String, Mutex<MockPinState>>>, // keyed by pin id
-}
-
-#[derive(Debug, Clone)]
-struct MockPinState {
-    state: GpioState,
-    value: u8,
-}
-
-impl GpioBackend for MockGpioBackend {
-    fn get_state(&self, pin_id: &str) -> Result<GpioState, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if let Some(pin_lock) = pins.get(pin_id) {
-            let pin = pin_lock
-                .lock()
-                .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-            Ok(pin.state)
-        } else {
-            Ok(GpioState::Disabled)
-        }
-    }
-
-    fn set_state(&self, pin_id: &str, _pin: &PinConfig, state: GpioState) -> Result<(), AppError> {
-        let mut pins = self
-            .pins
-            .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        let entry = pins.entry(pin_id.to_string()).or_insert_with(|| {
-            Mutex::new(MockPinState {
-                state: GpioState::Disabled,
-                value: 0,
-            })
-        });
-
-        let mut pin = entry
-            .lock()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        pin.state = state;
-        if state == GpioState::Disabled {
-            pin.value = 0;
-        }
-        Ok(())
-    }
-
-    fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-        let entry = pins
-            .get(pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let pin = entry
-            .lock()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if pin.state == GpioState::Disabled {
-            return Err(AppError::InvalidState(
-                "pin is disabled and cannot be read".to_string(),
-            ));
-        }
-        Ok(pin.value)
-    }
-
-    fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-        let entry = pins
-            .get(pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let mut pin = entry
-            .lock()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if !pin.state.is_writable() {
-            return Err(AppError::InvalidState(
-                "pin must be in output mode to set value".into(),
-            ));
-        }
-
-        pin.value = value;
-        Ok(())
-    }
-}
-
-#[cfg(feature = "hardware-gpio")]
-pub struct LibgpiodBackend {
-    pins: RwLock<HashMap<String, Mutex<PinHandle>>>, // keyed by pin id
-}
-
-#[cfg(feature = "hardware-gpio")]
-struct PinHandle {
-    line: u32,
-    state: GpioState,
-    _chip: Chip,
-    request: request::Request,
-}
-
-#[cfg(feature = "hardware-gpio")]
-impl LibgpiodBackend {
-    pub fn new() -> Result<Self, AppError> {
-        Ok(Self {
-            pins: RwLock::new(HashMap::new()),
-        })
-    }
-
-    fn settings_for_state(state: GpioState) -> Result<line::Settings, AppError> {
-        let mut settings =
-            line::Settings::new().map_err(|e| AppError::Gpio(format!("libgpiod settings: {e}")))?;
-
-        match state {
-            GpioState::Error | GpioState::Disabled => {
-                return Err(AppError::InvalidState(
-                    "cannot create settings for error or disabled state".into(),
-                ));
-            }
-            GpioState::PushPull => {
-                settings
-                    .set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_drive(line::Drive::PushPull)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod drive: {e}")))?;
-            }
-            GpioState::OpenDrain => {
-                settings
-                    .set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_drive(line::Drive::OpenDrain)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod drive: {e}")))?;
-            }
-            GpioState::OpenSource => {
-                settings
-                    .set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_drive(line::Drive::OpenSource)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod drive: {e}")))?;
-            }
-            GpioState::Floating => {
-                settings
-                    .set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_bias(None)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod bias: {e}")))?;
-            }
-            GpioState::PullUp => {
-                settings
-                    .set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_bias(Some(line::Bias::PullUp))
-                    .map_err(|e| AppError::Gpio(format!("libgpiod bias: {e}")))?;
-            }
-            GpioState::PullDown => {
-                settings
-                    .set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("libgpiod dir: {e}")))?;
-                settings
-                    .set_bias(Some(line::Bias::PullDown))
-                    .map_err(|e| AppError::Gpio(format!("libgpiod bias: {e}")))?;
-            }
-        }
-
-        Ok(settings)
-    }
-
-    fn open_chip(path: &str) -> Result<Chip, AppError> {
-        let p = PathBuf::from(path);
-        Chip::open(&p).map_err(|e| AppError::Gpio(format!("open chip {path}: {e}")))
-    }
-
-    fn make_line_config(offset: u32, settings: line::Settings) -> Result<line::Config, AppError> {
-        let mut cfg =
-            line::Config::new().map_err(|e| AppError::Gpio(format!("line config: {e}")))?;
-        cfg.add_line_settings(&[offset], settings)
-            .map_err(|e| AppError::Gpio(format!("line config add settings: {e}")))?;
-        Ok(cfg)
-    }
-
-    fn request_lines(chip: &Chip, line_cfg: &line::Config) -> Result<request::Request, AppError> {
-        let mut req_cfg =
-            request::Config::new().map_err(|e| AppError::Gpio(format!("request config: {e}")))?;
-        req_cfg
-            .set_consumer("gmgr")
-            .map_err(|e| AppError::Gpio(format!("request consumer: {e}")))?;
-        chip.request_lines(Some(&req_cfg), line_cfg)
-            .map_err(|e| AppError::Gpio(format!("request lines: {e}")))
-    }
-}
-
-#[cfg(feature = "hardware-gpio")]
-impl GpioBackend for LibgpiodBackend {
-    fn get_state(&self, pin_id: &str) -> Result<GpioState, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if let Some(handle_lock) = pins.get(pin_id) {
-            let handle = handle_lock
-                .lock()
-                .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-            Ok(handle.state)
-        } else {
-            Ok(GpioState::Disabled)
-        }
-    }
-
-    fn set_state(&self, pin_id: &str, pin: &PinConfig, state: GpioState) -> Result<(), AppError> {
-        let mut pins = self
-            .pins
-            .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if state == GpioState::Disabled {
-            pins.remove(pin_id);
-            return Ok(());
-        }
-
-        match pins.entry(pin_id.to_string()) {
-            Entry::Occupied(mut entry) => {
-                let handle_lock = entry.get_mut();
-                let mut handle = handle_lock
-                    .lock()
-                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-                if handle.state == state {
-                    return Ok(());
-                }
-
-                let settings = Self::settings_for_state(state)?;
-                let line_cfg = Self::make_line_config(handle.line, settings)?;
-                handle
-                    .request
-                    .reconfigure_lines(&line_cfg)
-                    .map_err(|e| AppError::Gpio(format!("reconfigure lines: {e}")))?;
-                handle.state = state;
-            }
-            Entry::Vacant(entry) => {
-                let settings = Self::settings_for_state(state)?;
-                let line_cfg = Self::make_line_config(pin.line, settings)?;
-                let chip = Self::open_chip(&pin.chip)?;
-                let request = Self::request_lines(&chip, &line_cfg)?;
-                entry.insert(Mutex::new(PinHandle {
-                    line: pin.line,
-                    state,
-                    _chip: chip,
-                    request,
-                }));
-            }
-        }
-        Ok(())
-    }
-
-    fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-        let handle_lock = pins
-            .get(pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let handle = handle_lock
-            .lock()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-        let value = handle
-            .request
-            .value(handle.line)
-            .map_err(|e| AppError::Gpio(format!("get value: {e}")))?;
-
-        Ok(match value {
-            line::Value::InActive => 0,
-            line::Value::Active => 1,
-        })
-    }
-
-    fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-        let handle_lock = pins
-            .get(pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let mut handle = handle_lock
-            .lock()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if !handle.state.is_writable() {
-            return Err(AppError::InvalidState(
-                "pin must be in output mode to set value".to_string(),
-            ));
-        }
-
-        let offset = handle.line;
-
-        handle
-            .request
-            .set_value(
-                offset,
-                match value {
-                    0 => line::Value::InActive,
-                    1 => line::Value::Active,
-                    _ => line::Value::InActive,
-                },
-            )
-            .map_err(|e| AppError::Gpio(format!("set value: {e}")))?;
-        Ok(())
-    }
-}
+const GPIO_MANAGER_EVENT_HISTORY_CAPACITY: usize = 32;
 
 pub struct GpioManager {
     backend: Arc<dyn GpioBackend>,
     config: Arc<AppConfig>,
+    event_tx: broadcast::Sender<EdgeEvent>,
+    event_history: Arc<RwLock<HashMap<String, VecDeque<EdgeEvent>>>>,
 }
 
 impl GpioManager {
     pub fn new(config: Arc<AppConfig>, backend: Arc<dyn GpioBackend>) -> Self {
-        Self { backend, config }
+        let (event_tx, _) = broadcast::channel(128);
+        let mut history = HashMap::new();
+        for id in config.gpios.keys() {
+            history.insert(id.clone(), VecDeque::new());
+        }
+        Self {
+            backend,
+            config,
+            event_tx,
+            event_history: Arc::new(RwLock::new(history)),
+        }
     }
 
     fn pin_config(&self, pin_id: &str) -> Result<&PinConfig, AppError> {
@@ -410,63 +132,83 @@ impl GpioManager {
         }
     }
 
-    pub async fn list_pins(&self) -> Vec<PinDescriptor> {
+    fn edge_callback(&self) -> EdgeCallback {
+        let tx = self.event_tx.clone();
+        let history = self.event_history.clone();
+        Arc::new(move |event: EdgeEvent| {
+            if let Ok(mut map) = history.write() {
+                let deque: &mut VecDeque<EdgeEvent> = map.entry(event.pin_id.clone()).or_default();
+                while deque.len() >= GPIO_MANAGER_EVENT_HISTORY_CAPACITY {
+                    deque.pop_front();
+                }
+                deque.push_back(event.clone());
+            }
+            let _ = tx.send(event);
+        })
+    }
+
+    pub async fn list_pins(&self) -> HashMap<String, PinDescriptor> {
         self.config
             .gpios
             .iter()
-            .map(|(id, cfg)| PinDescriptor {
-                info: PinInfo {
-                    id: id.clone(),
-                    name: cfg.name.clone(),
-                    chip: cfg.chip.clone(),
-                    line: cfg.line,
-                    capabilities: cfg.capabilities.clone(),
-                },
-                state: self.backend.get_state(id).unwrap_or(GpioState::Error),
+            .map(|(id, cfg)| {
+                let settings = self.backend.get_settings(id).unwrap_or_default();
+                (
+                    id.clone(),
+                    PinDescriptor {
+                        info: cfg.clone(),
+                        settings,
+                    },
+                )
             })
             .collect()
     }
 
     pub async fn get_pin_descriptor(&self, pin_id: &str) -> Result<PinDescriptor, AppError> {
         let cfg = self.pin_config(pin_id)?.clone();
+        let settings = self.backend.get_settings(pin_id).unwrap_or_default();
         Ok(PinDescriptor {
-            info: PinInfo {
-                id: pin_id.to_string(),
-                name: cfg.name,
-                chip: cfg.chip,
-                line: cfg.line,
-                capabilities: cfg.capabilities,
-            },
-            state: self.backend.get_state(pin_id).unwrap_or(GpioState::Error),
+            info: cfg,
+            settings,
         })
     }
 
-    pub async fn get_pin_info(&self, pin_id: &str) -> Result<PinInfo, AppError> {
-        let cfg = self.pin_config(pin_id)?.clone();
-        Ok(PinInfo {
-            id: pin_id.to_string(),
-            name: cfg.name,
-            chip: cfg.chip,
-            line: cfg.line,
-            capabilities: cfg.capabilities,
-        })
+    pub async fn get_pin_info(&self, pin_id: &str) -> Result<PinConfig, AppError> {
+        self.pin_config(pin_id).cloned()
     }
 
-    pub async fn get_state(&self, pin_id: &str) -> Result<GpioState, AppError> {
-        self.backend
-            .get_state(pin_id)
-            .map_err(|_| AppError::NotFoundPin(pin_id.to_string()))
+    pub async fn get_pin_settings(&self, pin_id: &str) -> Result<PinSettings, AppError> {
+        self.pin_config(pin_id)?;
+        self.backend.get_settings(pin_id)
     }
 
-    pub async fn set_state(&self, pin_id: &str, state: GpioState) -> Result<(), AppError> {
+    pub async fn set_pin_settings(
+        &self,
+        pin_id: &str,
+        settings: PinSettings,
+    ) -> Result<(), AppError> {
         let cfg = self.pin_config(pin_id)?;
-        if !Self::capability_matches(state, &cfg.capabilities) {
+
+        if !Self::capability_matches(settings.state, &cfg.capabilities) {
             return Err(AppError::InvalidState(format!(
-                "state {state:?} not supported by pin {pin_id}"
+                "state {state:?} not supported by pin {pin_id}",
+                state = settings.state
             )));
         }
-        self.backend.set_state(pin_id, cfg, state)?;
-        Ok(())
+
+        if settings.edge != EdgeDetect::None && !settings.state.is_edge_detectable() {
+            return Err(AppError::InvalidState(
+                "edge detection requires an input-capable state".into(),
+            ));
+        }
+
+        let callback = if settings.edge != EdgeDetect::None {
+            Some(self.edge_callback())
+        } else {
+            None
+        };
+
+        self.backend.set_settings(pin_id, cfg, &settings, callback)
     }
 
     pub async fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
@@ -478,7 +220,33 @@ impl GpioManager {
         if value > 1 {
             return Err(AppError::InvalidValue("value must be 0 or 1".to_string()));
         }
+        self.pin_config(pin_id)?;
         self.backend.write_value(pin_id, value)?;
         Ok(())
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<EdgeEvent> {
+        self.event_tx.subscribe()
+    }
+
+    pub async fn get_events(&self, pin_id: &str) -> Result<Vec<EdgeEvent>, AppError> {
+        self.pin_config(pin_id)?;
+        let map = self
+            .event_history
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        Ok(map
+            .get(pin_id)
+            .map(|d| d.iter().cloned().collect())
+            .unwrap_or_else(Vec::new))
+    }
+
+    pub async fn get_last_event(&self, pin_id: &str) -> Result<Option<EdgeEvent>, AppError> {
+        self.pin_config(pin_id)?;
+        let map = self
+            .event_history
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        Ok(map.get(pin_id).and_then(|d| d.back().cloned()))
     }
 }

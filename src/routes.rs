@@ -1,12 +1,86 @@
+use crate::config::EdgeDetect;
 use crate::error::AppError;
-use crate::gpio::{GpioManager, GpioState, PinDescriptor};
+use crate::gpio::{EdgeEvent, GpioManager, GpioState, PinSettings};
+use actix::prelude::*;
 use actix_web::{HttpRequest, HttpResponse, Responder, guard, http::Method, web};
-use std::collections::HashMap;
+use actix_web_actors::ws;
+use serde::Deserialize;
 use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 #[derive(Clone)]
 pub struct AppState {
     pub manager: Arc<GpioManager>,
+}
+
+#[derive(Deserialize)]
+struct SettingsPayload {
+    state: Option<GpioState>,
+    edge: Option<EdgeDetect>,
+    debounce_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+struct EventsQuery {
+    limit: Option<usize>,
+}
+
+struct EventWs {
+    rx: broadcast::Receiver<EdgeEvent>,
+    pin_filter: Option<String>,
+}
+
+impl Actor for EventWs {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        let stream = BroadcastStream::new(self.rx.resubscribe());
+        ctx.add_stream(stream);
+    }
+}
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for EventWs {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match msg {
+            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
+            Ok(ws::Message::Text(_)) | Ok(ws::Message::Binary(_)) => {
+                // ignore incoming data from clients
+            }
+            Ok(ws::Message::Close(reason)) => ctx.close(reason),
+            Ok(ws::Message::Pong(_)) => {}
+            Ok(ws::Message::Continuation(_)) => {}
+            Err(_) => ctx.stop(),
+            _ => {}
+        }
+    }
+}
+
+impl StreamHandler<Result<EdgeEvent, BroadcastStreamRecvError>> for EventWs {
+    fn handle(
+        &mut self,
+        item: Result<EdgeEvent, BroadcastStreamRecvError>,
+        ctx: &mut Self::Context,
+    ) {
+        match item {
+            Ok(event) => {
+                if self
+                    .pin_filter
+                    .as_ref()
+                    .map(|p| p == &event.pin_id)
+                    .unwrap_or(true)
+                {
+                    if let Ok(text) = serde_json::to_string(&event) {
+                        ctx.text(text);
+                    }
+                }
+            }
+            Err(BroadcastStreamRecvError::Lagged(_)) => {
+                // drop lagged messages silently
+            }
+        }
+    }
 }
 
 pub fn api_scope(base_path: &str) -> actix_web::Scope {
@@ -14,6 +88,15 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
         .service(
             web::resource("/gpios")
                 .route(web::get().to(list_gpios))
+                .route(
+                    web::route()
+                        .guard(guard_not_methods(&[Method::GET]))
+                        .to(method_not_allowed),
+                ),
+        )
+        .service(
+            web::resource("/gpios/events")
+                .route(web::get().to(events_ws_all))
                 .route(
                     web::route()
                         .guard(guard_not_methods(&[Method::GET]))
@@ -39,6 +122,16 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
                 ),
         )
         .service(
+            web::resource("/gpio/{pin_id}/settings")
+                .route(web::get().to(get_settings))
+                .route(web::post().to(set_settings))
+                .route(
+                    web::route()
+                        .guard(guard_not_methods(&[Method::GET, Method::POST]))
+                        .to(method_not_allowed),
+                ),
+        )
+        .service(
             web::resource("/gpio/{pin_id}/value")
                 .route(web::get().to(get_value))
                 .route(web::post().to(set_value))
@@ -49,12 +142,20 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
                 ),
         )
         .service(
-            web::resource("/gpio/{pin_id}/state")
-                .route(web::get().to(get_state))
-                .route(web::post().to(set_state))
+            web::resource("/gpio/{pin_id}/event")
+                .route(web::get().to(get_last_event))
                 .route(
                     web::route()
-                        .guard(guard_not_methods(&[Method::GET, Method::POST]))
+                        .guard(guard_not_methods(&[Method::GET]))
+                        .to(method_not_allowed),
+                ),
+        )
+        .service(
+            web::resource("/gpio/{pin_id}/events")
+                .route(web::get().to(get_events))
+                .route(
+                    web::route()
+                        .guard(guard_not_methods(&[Method::GET]))
                         .to(method_not_allowed),
                 ),
         )
@@ -62,11 +163,7 @@ pub fn api_scope(base_path: &str) -> actix_web::Scope {
 
 async fn list_gpios(state: web::Data<AppState>) -> Result<impl Responder, AppError> {
     let pins = state.manager.list_pins().await;
-    let response: HashMap<String, PinDescriptor> = pins
-        .into_iter()
-        .map(|p| (p.info.id.to_string(), p))
-        .collect();
-    Ok(web::Json(response))
+    Ok(web::Json(pins))
 }
 
 async fn pin_descriptor(
@@ -93,7 +190,7 @@ async fn pin_info(
     Ok(web::Json(info))
 }
 
-async fn get_state(
+async fn get_settings(
     req: HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<impl Responder, AppError> {
@@ -101,13 +198,11 @@ async fn get_state(
         .match_info()
         .get("pin_id")
         .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
-    let state_value = state.manager.get_state(pin_id).await?;
-    Ok(HttpResponse::Ok()
-        .content_type("text/plain; charset=utf-8")
-        .body(state_to_str(state_value)))
+    let settings = state.manager.get_pin_settings(pin_id).await?;
+    Ok(web::Json(settings))
 }
 
-async fn set_state(
+async fn set_settings(
     req: HttpRequest,
     body: web::Bytes,
     state: web::Data<AppState>,
@@ -116,9 +211,14 @@ async fn set_state(
         .match_info()
         .get("pin_id")
         .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
-    let desired_state = parse_state_payload(&body)?;
-    state.manager.set_state(pin_id, desired_state).await?;
-    Ok(HttpResponse::Ok())
+
+    let current = state.manager.get_pin_settings(pin_id).await?;
+    let merged = parse_settings_payload(&body, current)?;
+    state
+        .manager
+        .set_pin_settings(pin_id, merged.clone())
+        .await?;
+    Ok(web::Json(merged))
 }
 
 async fn get_value(
@@ -131,7 +231,7 @@ async fn get_value(
         .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
     let value = state.manager.read_value(pin_id).await?;
     Ok(HttpResponse::Ok()
-        .content_type("text/plain; charset=utf-8")
+        .content_type("application/json")
         .body(value.to_string()))
 }
 
@@ -147,6 +247,57 @@ async fn set_value(
     let value = parse_value_payload(&body)?;
     state.manager.write_value(pin_id, value).await?;
     Ok(HttpResponse::Ok())
+}
+
+async fn get_last_event(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> Result<impl Responder, AppError> {
+    let pin_id = req
+        .match_info()
+        .get("pin_id")
+        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let last = state.manager.get_last_event(pin_id).await?;
+    if let Some(event) = last {
+        Ok(HttpResponse::Ok().json(event))
+    } else {
+        Ok(HttpResponse::Ok().finish())
+    }
+}
+
+async fn get_events(
+    req: HttpRequest,
+    query: web::Query<EventsQuery>,
+    state: web::Data<AppState>,
+) -> Result<impl Responder, AppError> {
+    let pin_id = req
+        .match_info()
+        .get("pin_id")
+        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+
+    let mut events = state.manager.get_events(pin_id).await?;
+    if let Some(limit) = query.limit {
+        if events.len() > limit {
+            let start = events.len() - limit;
+            events = events.split_off(start);
+        }
+    }
+
+    Ok(web::Json(events))
+}
+
+async fn events_ws_all(
+    req: HttpRequest,
+    stream: web::Payload,
+    state: web::Data<AppState>,
+) -> Result<HttpResponse, AppError> {
+    let rx = state.manager.subscribe_events();
+    let session = EventWs {
+        rx,
+        pin_filter: None,
+    };
+
+    ws::start(session, &req, stream).map_err(|e| AppError::Gpio(format!("websocket error: {e}")))
 }
 
 fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
@@ -169,45 +320,26 @@ fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
     ))
 }
 
-fn parse_state_payload(body: &[u8]) -> Result<GpioState, AppError> {
+fn parse_settings_payload(body: &[u8], current: PinSettings) -> Result<PinSettings, AppError> {
     if body.is_empty() {
-        return Err(AppError::InvalidState("empty state payload".to_string()));
+        return Err(AppError::InvalidValue("empty settings payload".to_string()));
     }
 
-    if let Ok(text) = std::str::from_utf8(body) {
-        if let Ok(parsed) = parse_state_str(text.trim()) {
-            return Ok(parsed);
-        }
+    let payload: SettingsPayload = serde_json::from_slice(body)
+        .map_err(|e| AppError::InvalidValue(format!("invalid settings payload: {e}")))?;
+
+    let mut merged = current;
+    if let Some(state) = payload.state {
+        merged.state = state;
+    }
+    if let Some(edge) = payload.edge {
+        merged.edge = edge;
+    }
+    if let Some(debounce) = payload.debounce_ms {
+        merged.debounce_ms = debounce;
     }
 
-    Err(AppError::InvalidState(
-        "state payload must be one of: disabled, push-pull, floating, pull-up, pull-down"
-            .to_string(),
-    ))
-}
-
-fn parse_state_str(input: &str) -> Result<GpioState, AppError> {
-    match input {
-        "disabled" => Ok(GpioState::Disabled),
-        "push-pull" => Ok(GpioState::PushPull),
-        "floating" => Ok(GpioState::Floating),
-        "pull-up" => Ok(GpioState::PullUp),
-        "pull-down" => Ok(GpioState::PullDown),
-        other => Err(AppError::InvalidState(format!("invalid state: {other}"))),
-    }
-}
-
-fn state_to_str(state: GpioState) -> &'static str {
-    match state {
-        GpioState::Error => "error",
-        GpioState::Disabled => "disabled",
-        GpioState::PushPull => "push-pull",
-        GpioState::OpenDrain => "open-drain",
-        GpioState::OpenSource => "open-source",
-        GpioState::Floating => "floating",
-        GpioState::PullUp => "pull-up",
-        GpioState::PullDown => "pull-down",
-    }
+    Ok(merged)
 }
 
 async fn method_not_allowed() -> HttpResponse {

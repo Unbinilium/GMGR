@@ -214,10 +214,7 @@ async fn set_settings(
 
     let current = state.manager.get_pin_settings(pin_id).await?;
     let merged = parse_settings_payload(&body, current)?;
-    state
-        .manager
-        .set_pin_settings(pin_id, merged.clone())
-        .await?;
+    state.manager.set_pin_settings(pin_id, &merged).await?;
     Ok(web::Json(merged))
 }
 

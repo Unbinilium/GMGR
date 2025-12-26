@@ -50,7 +50,8 @@ fn sample_config() -> AppConfig {
                         "pull-down"
                     ]
                 }
-            }
+            },
+            "event_history_capacity": 32
         }
         "#,
     )

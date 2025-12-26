@@ -13,7 +13,10 @@ use gmgr::gpio::MockGpioBackend;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let config_path = std::env::var("GMGR_CONFIG").unwrap_or_else(|_| "config.json".to_string());
+    let config_path = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("GMGR_CONFIG").ok())
+        .unwrap_or_else(|| "config.json".to_string());
     let config = Arc::new(
         AppConfig::load_from_file(&config_path)
             .unwrap_or_else(|e| panic!("failed to load config: {e}")),

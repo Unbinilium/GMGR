@@ -88,13 +88,12 @@ pub trait GpioBackend: Send + Sync {
     fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError>;
 }
 
-const GPIO_MANAGER_EVENT_HISTORY_CAPACITY: usize = 32;
-
 pub struct GpioManager {
     backend: Arc<dyn GpioBackend>,
     config: Arc<AppConfig>,
     event_tx: broadcast::Sender<EdgeEvent>,
     event_history: Arc<RwLock<HashMap<String, VecDeque<EdgeEvent>>>>,
+    event_history_capacity: usize,
 }
 
 impl GpioManager {
@@ -104,11 +103,13 @@ impl GpioManager {
         for id in config.gpios.keys() {
             history.insert(id.clone(), VecDeque::new());
         }
+        let event_history_capacity = config.event_history_capacity;
         Self {
             backend,
             config,
             event_tx,
             event_history: Arc::new(RwLock::new(history)),
+            event_history_capacity,
         }
     }
 
@@ -135,10 +136,11 @@ impl GpioManager {
     fn edge_callback(&self) -> EdgeCallback {
         let tx = self.event_tx.clone();
         let history = self.event_history.clone();
+        let capacity = self.event_history_capacity;
         Arc::new(move |event: EdgeEvent| {
             if let Ok(mut map) = history.write() {
                 let deque: &mut VecDeque<EdgeEvent> = map.entry(event.pin_id.clone()).or_default();
-                while deque.len() >= GPIO_MANAGER_EVENT_HISTORY_CAPACITY {
+                while deque.len() >= capacity {
                     deque.pop_front();
                 }
                 deque.push_back(event.clone());
@@ -185,14 +187,13 @@ impl GpioManager {
     pub async fn set_pin_settings(
         &self,
         pin_id: &str,
-        settings: PinSettings,
+        settings: &PinSettings,
     ) -> Result<(), AppError> {
         let cfg = self.pin_config(pin_id)?;
 
         if !Self::capability_matches(settings.state, &cfg.capabilities) {
             return Err(AppError::InvalidState(format!(
-                "state {state:?} not supported by pin {pin_id}",
-                state = settings.state
+                "state not supported by pin {pin_id}"
             )));
         }
 
@@ -218,7 +219,7 @@ impl GpioManager {
 
     pub async fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
         if value > 1 {
-            return Err(AppError::InvalidValue("value must be 0 or 1".to_string()));
+            return Err(AppError::InvalidValue("value must be 0 or 1".into()));
         }
         self.pin_config(pin_id)?;
         self.backend.write_value(pin_id, value)?;

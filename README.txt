@@ -14,7 +14,8 @@
     curl -vX GET http://localhost:8080/api/v1/gpio/1 | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/info | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/settings | jq
-    curl -vX POST http://localhost:8080/api/v1/gpio/1/settings -d '{"state":"floating","edge":"both","debounce_ms":50}' | jq
+    curl -vX POST http://localhost:8080/api/v1/gpio/1/settings \
+        -d '{"state":"floating","edge":"both","debounce_ms":50}' | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/value | jq
     curl -vX POST http://localhost:8080/api/v1/gpio/1/value -d 1 | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/event | jq

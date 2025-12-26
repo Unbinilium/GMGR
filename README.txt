@@ -1,4 +1,4 @@
-[GMGT]
+[GMGR]
     A simple GPIO management REST API server written in Rust.
 
 [Build]

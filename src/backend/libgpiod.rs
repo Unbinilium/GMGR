@@ -2,13 +2,11 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::thread::yield_now;
+use std::thread::{JoinHandle, yield_now};
 use std::time::Duration;
 
-use futures::executor::block_on;
 use libgpiod::{chip::Chip, line, line::EventClock, request};
 use parking_lot::FairMutex;
-use tokio::task::JoinHandle;
 
 use crate::config::{EdgeDetect, PinConfig};
 use crate::error::AppError;
@@ -80,7 +78,7 @@ impl GpiodHandle {
 #[allow(dead_code)]
 struct EdgeListener {
     cancel: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl EdgeListener {
@@ -95,7 +93,7 @@ impl EdgeListener {
         let mut buffer = request::Buffer::new(LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY)
             .map_err(|e| AppError::Gpio(format!("event buffer: {e}")))?;
 
-        let handle = tokio::task::spawn_blocking(move || {
+        let handle = std::thread::spawn(move || {
             while !cancel_flag.load(Ordering::Relaxed) {
                 let hdl = gpiod_handle.lock();
                 let req = &hdl.request;
@@ -143,18 +141,21 @@ impl EdgeListener {
                     });
                 }
             }
-
-            ()
         });
 
-        Ok(Self { cancel, handle })
+        Ok(Self {
+            cancel,
+            handle: Some(handle),
+        })
     }
 }
 
 impl Drop for EdgeListener {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
-        let _ = block_on(&mut self.handle);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 

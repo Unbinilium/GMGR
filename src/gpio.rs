@@ -2,14 +2,12 @@ use crate::config::{AppConfig, EdgeDetect, GpioCapability, PinConfig};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
-#[cfg(feature = "hardware-gpio")]
-pub use crate::backend::LibgpiodBackend;
-#[cfg(not(feature = "hardware-gpio"))]
-pub use crate::backend::MockGpioBackend;
+pub type GpioManager<B> = GenericGpioManager<B>;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -40,7 +38,39 @@ impl GpioState {
     }
 }
 
-pub type EdgeCallback = Arc<dyn Fn(EdgeEvent) + Send + Sync>;
+pub struct EventCallbackHandler {
+    event_tx: broadcast::Sender<EdgeEvent>,
+    event_history: RwLock<HashMap<String, VecDeque<EdgeEvent>>>,
+    event_history_capacity: usize,
+}
+
+impl EventCallbackHandler {
+    pub fn new(
+        event_tx: broadcast::Sender<EdgeEvent>,
+        event_history: RwLock<HashMap<String, VecDeque<EdgeEvent>>>,
+        event_history_capacity: usize,
+    ) -> Self {
+        Self {
+            event_tx,
+            event_history,
+            event_history_capacity,
+        }
+    }
+
+    pub fn dispatch(&self, event: EdgeEvent) {
+        {
+            let mut map = self.event_history.write();
+            let deque: &mut VecDeque<EdgeEvent> = map.entry(event.pin_id.clone()).or_default();
+            while deque.len() >= self.event_history_capacity {
+                deque.pop_front();
+            }
+            deque.push_back(event.clone());
+        }
+        let _ = self.event_tx.send(event);
+    }
+}
+
+pub type EventHandler = Arc<EventCallbackHandler>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EdgeEvent {
@@ -80,7 +110,7 @@ pub trait GpioBackend: Send + Sync {
         pin_id: &str,
         pin: &PinConfig,
         settings: &PinSettings,
-        event_callback: Option<EdgeCallback>,
+        event_callback: Option<EventHandler>,
     ) -> Result<(), AppError>;
 
     fn read_value(&self, pin_id: &str) -> Result<u8, AppError>;
@@ -88,28 +118,27 @@ pub trait GpioBackend: Send + Sync {
     fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError>;
 }
 
-pub struct GpioManager {
-    backend: Arc<dyn GpioBackend>,
+pub struct GenericGpioManager<B: GpioBackend> {
+    backend: Arc<B>,
+    event_handler: EventHandler,
     config: Arc<AppConfig>,
-    event_tx: broadcast::Sender<EdgeEvent>,
-    event_history: Arc<RwLock<HashMap<String, VecDeque<EdgeEvent>>>>,
-    event_history_capacity: usize,
 }
 
-impl GpioManager {
-    pub fn new(config: Arc<AppConfig>, backend: Arc<dyn GpioBackend>) -> Self {
-        let (event_tx, _) = broadcast::channel(128);
+impl<B: GpioBackend> GenericGpioManager<B> {
+    pub fn new(config: Arc<AppConfig>, backend: Arc<B>) -> Self {
+        let (event_tx, _) = broadcast::channel(config.broadcast_capacity);
         let mut history = HashMap::new();
         for id in config.gpios.keys() {
             history.insert(id.clone(), VecDeque::new());
         }
-        let event_history_capacity = config.event_history_capacity;
         Self {
             backend,
+            event_handler: Arc::new(EventCallbackHandler::new(
+                event_tx,
+                RwLock::new(history),
+                config.event_history_capacity,
+            )),
             config,
-            event_tx,
-            event_history: Arc::new(RwLock::new(history)),
-            event_history_capacity,
         }
     }
 
@@ -131,22 +160,6 @@ impl GpioManager {
             GpioState::PullUp => caps.contains(&GpioCapability::PullUp),
             GpioState::PullDown => caps.contains(&GpioCapability::PullDown),
         }
-    }
-
-    fn edge_callback(&self) -> EdgeCallback {
-        let tx = self.event_tx.clone();
-        let history = self.event_history.clone();
-        let capacity = self.event_history_capacity;
-        Arc::new(move |event: EdgeEvent| {
-            if let Ok(mut map) = history.write() {
-                let deque: &mut VecDeque<EdgeEvent> = map.entry(event.pin_id.clone()).or_default();
-                while deque.len() >= capacity {
-                    deque.pop_front();
-                }
-                deque.push_back(event.clone());
-            }
-            let _ = tx.send(event);
-        })
     }
 
     pub async fn list_pins(&self) -> HashMap<String, PinDescriptor> {
@@ -204,7 +217,7 @@ impl GpioManager {
         }
 
         let callback = if settings.edge != EdgeDetect::None {
-            Some(self.edge_callback())
+            Some(self.event_handler.clone())
         } else {
             None
         };
@@ -227,27 +240,32 @@ impl GpioManager {
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<EdgeEvent> {
-        self.event_tx.subscribe()
+        self.event_handler.event_tx.subscribe()
     }
 
-    pub async fn get_events(&self, pin_id: &str) -> Result<Vec<EdgeEvent>, AppError> {
+    pub async fn get_events(
+        &self,
+        pin_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
-        let map = self
-            .event_history
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        let map = self.event_handler.event_history.read();
         Ok(map
             .get(pin_id)
-            .map(|d| d.iter().cloned().collect())
-            .unwrap_or_else(Vec::new))
+            .map(|d| {
+                let events: Vec<EdgeEvent> = if let Some(lim) = limit {
+                    d.iter().rev().take(lim).cloned().collect()
+                } else {
+                    d.iter().cloned().collect()
+                };
+                events.into_iter().rev().collect()
+            })
+            .unwrap_or_default())
     }
 
     pub async fn get_last_event(&self, pin_id: &str) -> Result<Option<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
-        let map = self
-            .event_history
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        let map = self.event_handler.event_history.read();
         Ok(map.get(pin_id).and_then(|d| d.back().cloned()))
     }
 }

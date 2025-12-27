@@ -1,6 +1,6 @@
 use crate::config::EdgeDetect;
 use crate::error::AppError;
-use crate::gpio::{EdgeEvent, GpioManager, GpioState, PinSettings};
+use crate::gpio::{EdgeEvent, GpioBackend, GpioManager, GpioState, PinSettings};
 use actix::prelude::*;
 use actix_web::{HttpRequest, HttpResponse, Responder, guard, http::Method, web};
 use actix_web_actors::ws;
@@ -10,9 +10,16 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub manager: Arc<GpioManager>,
+pub struct AppState<B: GpioBackend> {
+    pub manager: Arc<GpioManager<B>>,
+}
+
+impl<B: GpioBackend> Clone for AppState<B> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: Arc::clone(&self.manager),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,92 +90,96 @@ impl StreamHandler<Result<EdgeEvent, BroadcastStreamRecvError>> for EventWs {
     }
 }
 
-pub fn api_scope(base_path: &str) -> actix_web::Scope {
-    web::scope(base_path)
-        .service(
-            web::resource("/gpios")
-                .route(web::get().to(list_gpios))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpios/events")
-                .route(web::get().to(events_ws_all))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}")
-                .route(web::get().to(pin_descriptor))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}/info")
-                .route(web::get().to(pin_info))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}/settings")
-                .route(web::get().to(get_settings))
-                .route(web::post().to(set_settings))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET, Method::POST]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}/value")
-                .route(web::get().to(get_value))
-                .route(web::post().to(set_value))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET, Method::POST]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}/event")
-                .route(web::get().to(get_last_event))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
-        .service(
-            web::resource("/gpio/{pin_id}/events")
-                .route(web::get().to(get_events))
-                .route(
-                    web::route()
-                        .guard(guard_not_methods(&[Method::GET]))
-                        .to(method_not_allowed),
-                ),
-        )
+impl<B: GpioBackend + 'static> AppState<B> {
+    pub fn api_scope(&self, base_path: &str) -> actix_web::Scope {
+        web::scope(base_path)
+            .service(
+                web::resource("/gpios")
+                    .route(web::get().to(list_gpios::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpios/events")
+                    .route(web::get().to(events_ws_all::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}")
+                    .route(web::get().to(pin_descriptor::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}/info")
+                    .route(web::get().to(pin_info::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}/settings")
+                    .route(web::get().to(get_settings::<B>))
+                    .route(web::post().to(set_settings::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET, Method::POST]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}/value")
+                    .route(web::get().to(get_value::<B>))
+                    .route(web::post().to(set_value::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET, Method::POST]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}/event")
+                    .route(web::get().to(get_last_event::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+            .service(
+                web::resource("/gpio/{pin_id}/events")
+                    .route(web::get().to(get_events::<B>))
+                    .route(
+                        web::route()
+                            .guard(guard_not_methods(&[Method::GET]))
+                            .to(method_not_allowed),
+                    ),
+            )
+    }
 }
 
-async fn list_gpios(state: web::Data<AppState>) -> Result<impl Responder, AppError> {
+async fn list_gpios<B: GpioBackend + 'static>(
+    state: web::Data<AppState<B>>,
+) -> Result<impl Responder, AppError> {
     let pins = state.manager.list_pins().await;
     Ok(web::Json(pins))
 }
 
-async fn pin_descriptor(
+async fn pin_descriptor<B: GpioBackend + 'static>(
     req: HttpRequest,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -178,9 +189,9 @@ async fn pin_descriptor(
     Ok(web::Json(desc))
 }
 
-async fn pin_info(
+async fn pin_info<B: GpioBackend + 'static>(
     req: HttpRequest,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -190,9 +201,9 @@ async fn pin_info(
     Ok(web::Json(info))
 }
 
-async fn get_settings(
+async fn get_settings<B: GpioBackend + 'static>(
     req: HttpRequest,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -202,10 +213,10 @@ async fn get_settings(
     Ok(web::Json(settings))
 }
 
-async fn set_settings(
+async fn set_settings<B: GpioBackend + 'static>(
     req: HttpRequest,
     body: web::Bytes,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -218,9 +229,9 @@ async fn set_settings(
     Ok(web::Json(merged))
 }
 
-async fn get_value(
+async fn get_value<B: GpioBackend + 'static>(
     req: HttpRequest,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -232,10 +243,10 @@ async fn get_value(
         .body(value.to_string()))
 }
 
-async fn set_value(
+async fn set_value<B: GpioBackend + 'static>(
     req: HttpRequest,
     body: web::Bytes,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -246,9 +257,9 @@ async fn set_value(
     Ok(HttpResponse::Ok())
 }
 
-async fn get_last_event(
+async fn get_last_event<B: GpioBackend + 'static>(
     req: HttpRequest,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
@@ -262,31 +273,24 @@ async fn get_last_event(
     }
 }
 
-async fn get_events(
+async fn get_events<B: GpioBackend + 'static>(
     req: HttpRequest,
     query: web::Query<EventsQuery>,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = req
         .match_info()
         .get("pin_id")
         .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
-
-    let mut events = state.manager.get_events(pin_id).await?;
-    if let Some(limit) = query.limit {
-        if events.len() > limit {
-            let start = events.len() - limit;
-            events = events.split_off(start);
-        }
-    }
+    let events = state.manager.get_events(pin_id, query.limit).await?;
 
     Ok(web::Json(events))
 }
 
-async fn events_ws_all(
+async fn events_ws_all<B: GpioBackend + 'static>(
     req: HttpRequest,
     stream: web::Payload,
-    state: web::Data<AppState>,
+    state: web::Data<AppState<B>>,
 ) -> Result<HttpResponse, AppError> {
     let rx = state.manager.subscribe_events();
     let session = EventWs {
@@ -303,12 +307,10 @@ fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
     }
 
     if let Ok(text) = std::str::from_utf8(body) {
-        let trimmed = text.trim();
-        if trimmed == "0" {
-            return Ok(0);
-        }
-        if trimmed == "1" {
-            return Ok(1);
+        match text.trim() {
+            "0" => return Ok(0),
+            "1" => return Ok(1),
+            _ => {}
         }
     }
 

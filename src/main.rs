@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use actix_web::{App, HttpServer, web};
 
-use gmgr::config::AppConfig;
-use gmgr::gpio::{GpioBackend, GpioManager};
-use gmgr::routes::{AppState, api_scope};
+use gmgr::{AppConfig, AppState, GpioManager};
 
 #[cfg(feature = "hardware-gpio")]
-use gmgr::gpio::LibgpiodBackend;
+use gmgr::LibgpiodBackend;
 #[cfg(not(feature = "hardware-gpio"))]
-use gmgr::gpio::MockGpioBackend;
+use gmgr::MockGpioBackend;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -22,7 +20,7 @@ async fn main() -> std::io::Result<()> {
             .unwrap_or_else(|e| panic!("failed to load config: {e}")),
     );
 
-    let backend: Arc<dyn GpioBackend> = {
+    let backend = {
         #[cfg(feature = "hardware-gpio")]
         {
             Arc::new(
@@ -37,9 +35,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     let manager = Arc::new(GpioManager::new(config.clone(), backend));
-    let app_state = AppState {
-        manager: manager.clone(),
-    };
+    let app_state = AppState { manager };
 
     let http_cfg = config.http.clone();
     let bind_addr = format!("{}:{}", http_cfg.host, http_cfg.port);
@@ -50,13 +46,12 @@ async fn main() -> std::io::Result<()> {
     );
 
     HttpServer::new(move || {
-        let state = app_state.clone();
         let scope_path = http_cfg.path.clone();
         App::new()
-            .app_data(web::Data::new(state))
-            .service(api_scope(&scope_path))
+            .app_data(web::Data::new(app_state.clone()))
+            .service(app_state.api_scope(&scope_path))
     })
-    .bind(bind_addr)?
+    .bind_auto_h2c(bind_addr)?
     .run()
     .await
 }

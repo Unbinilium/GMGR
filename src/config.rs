@@ -48,6 +48,7 @@ pub struct PinConfig {
 pub struct AppConfig {
     pub http: HttpConfig,
     pub gpios: HashMap<String, PinConfig>,
+    pub broadcast_capacity: usize,
     pub event_history_capacity: usize,
 }
 

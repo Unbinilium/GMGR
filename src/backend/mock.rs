@@ -4,7 +4,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{EdgeDetect, PinConfig};
 use crate::error::AppError;
-use crate::gpio::{EdgeCallback, EdgeEvent, GpioBackend, GpioState, PinSettings};
+use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
 #[derive(Default)]
 pub struct MockGpioBackend {
@@ -15,7 +15,7 @@ pub struct MockGpioBackend {
 struct MockPinState {
     settings: PinSettings,
     value: u8,
-    callback: Option<EdgeCallback>,
+    handler: Option<EventHandler>,
     last_event: Option<Instant>,
 }
 
@@ -41,7 +41,7 @@ impl GpioBackend for MockGpioBackend {
         pin_id: &str,
         _pin: &PinConfig,
         settings: &PinSettings,
-        event_callback: Option<EdgeCallback>,
+        event_handler: Option<EventHandler>,
     ) -> Result<(), AppError> {
         let mut pins = self
             .pins
@@ -52,7 +52,7 @@ impl GpioBackend for MockGpioBackend {
             Mutex::new(MockPinState {
                 settings: PinSettings::default(),
                 value: 0,
-                callback: None,
+                handler: None,
                 last_event: None,
             })
         });
@@ -64,12 +64,12 @@ impl GpioBackend for MockGpioBackend {
         pin.settings = settings.clone();
         if settings.state == GpioState::Disabled {
             pin.value = 0;
-            pin.callback = None;
+            pin.handler = None;
         } else if settings.edge != EdgeDetect::None {
-            pin.callback = event_callback;
+            pin.handler = event_handler;
             pin.last_event = None;
         } else {
-            pin.callback = None;
+            pin.handler = None;
         }
 
         Ok(())
@@ -130,8 +130,8 @@ impl GpioBackend for MockGpioBackend {
                     .unwrap_or(true);
                 if allow {
                     pin.last_event = Some(now);
-                    if let Some(cb) = &pin.callback {
-                        cb(EdgeEvent {
+                    if let Some(h) = &pin.handler {
+                        h.dispatch(EdgeEvent {
                             pin_id: pin_id.to_string(),
                             edge: edge_kind,
                             timestamp_ms: epoch_millis(),

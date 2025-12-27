@@ -38,5 +38,6 @@
             ]
         }
     },
+    "broadcast_capacity": 128,
     "event_history_capacity": 32
 }

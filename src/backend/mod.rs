@@ -1,6 +1,6 @@
 #[cfg(feature = "hardware-gpio")]
-pub mod libgpiod;
-pub mod mock;
+pub(crate) mod libgpiod;
+pub(crate) mod mock;
 
 #[cfg(feature = "hardware-gpio")]
 pub use libgpiod::LibgpiodBackend;

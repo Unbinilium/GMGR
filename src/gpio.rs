@@ -119,9 +119,9 @@ pub trait GpioBackend: Send + Sync {
 }
 
 pub struct GenericGpioManager<B: GpioBackend> {
+    config: Arc<AppConfig>,
     backend: Arc<B>,
     event_handler: EventHandler,
-    config: Arc<AppConfig>,
 }
 
 impl<B: GpioBackend> GenericGpioManager<B> {
@@ -131,14 +131,15 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         for id in config.gpios.keys() {
             history.insert(id.clone(), VecDeque::new());
         }
+        let event_handler = Arc::new(EventCallbackHandler::new(
+            event_tx,
+            RwLock::new(history),
+            config.event_history_capacity,
+        ));
         Self {
-            backend,
-            event_handler: Arc::new(EventCallbackHandler::new(
-                event_tx,
-                RwLock::new(history),
-                config.event_history_capacity,
-            )),
             config,
+            backend,
+            event_handler,
         }
     }
 

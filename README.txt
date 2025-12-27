@@ -1,5 +1,5 @@
 [GMGR]
-    A simple and high concurrency GPIO management REST API server written in Rust.
+    A simple and high concurrency GPIO management RESTful API server written in Rust.
 
 [Build]
     cargo build --release --features hardware-gpio

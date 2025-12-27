@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, RwLock};
+use std::sync::RwLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{EdgeDetect, PinConfig};
@@ -8,7 +8,7 @@ use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
 #[derive(Default)]
 pub struct MockGpioBackend {
-    pins: RwLock<HashMap<u32, Mutex<MockPinState>>>, // keyed by pin id
+    pins: RwLock<HashMap<u32, RwLock<MockPinState>>>, // keyed by pin id
 }
 
 #[derive(Clone)]
@@ -28,7 +28,7 @@ impl GpioBackend for MockGpioBackend {
 
         if let Some(pin_lock) = pins.get(&pin_id) {
             let pin = pin_lock
-                .lock()
+                .read()
                 .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
             Ok(pin.settings.clone())
         } else {
@@ -49,7 +49,7 @@ impl GpioBackend for MockGpioBackend {
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         let entry = pins.entry(pin_id).or_insert_with(|| {
-            Mutex::new(MockPinState {
+            RwLock::new(MockPinState {
                 settings: PinSettings::default(),
                 value: 0,
                 handler: None,
@@ -58,7 +58,7 @@ impl GpioBackend for MockGpioBackend {
         });
 
         let mut pin = entry
-            .lock()
+            .write()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         pin.settings = settings.clone();
@@ -84,7 +84,7 @@ impl GpioBackend for MockGpioBackend {
             .get_mut(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let pin = entry
-            .lock()
+            .read()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if pin.settings.state == GpioState::Disabled {
@@ -104,7 +104,7 @@ impl GpioBackend for MockGpioBackend {
             .get_mut(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let mut pin = entry
-            .lock()
+            .write()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if !pin.settings.state.is_writable() {

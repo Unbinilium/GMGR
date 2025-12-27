@@ -1,19 +1,19 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{yield_now, JoinHandle};
+use std::sync::{Arc, RwLock};
+use std::thread::{JoinHandle, yield_now};
 use std::time::Duration;
 
 use libgpiod::{chip::Chip, line, line::EventClock, request};
-use parking_lot::{FairMutex, RwLock};
+use parking_lot::FairMutex;
 
 use crate::config::{EdgeDetect, PinConfig};
 use crate::error::AppError;
 use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
 const LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY: usize = 32;
-const LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS: Duration = Duration::from_millis(100);
+const LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS: Duration = Duration::from_millis(10);
 
 pub struct LibgpiodBackend {
     pins: RwLock<HashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
@@ -106,7 +106,6 @@ impl EdgeListener {
                         continue;
                     }
                 };
-
                 if !has_event {
                     continue;
                 }
@@ -282,12 +281,17 @@ impl LibgpiodBackend {
 
 impl GpioBackend for LibgpiodBackend {
     fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError> {
-        let pins = self.pins.read();
+        let pins = self
+            .pins
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         match pins.get(&pin_id) {
             None => Ok(PinSettings::default()),
             Some(handle_lock) => {
-                let handle = handle_lock.read();
+                let handle = handle_lock
+                    .read()
+                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
                 Ok(handle.settings.clone())
             }
         }
@@ -302,11 +306,16 @@ impl GpioBackend for LibgpiodBackend {
     ) -> Result<(), AppError> {
         Self::validate_pin_settings(settings)?;
 
-        let mut pins = self.pins.write();
+        let mut pins = self
+            .pins
+            .write()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if settings.edge == EdgeDetect::None {
             if let Some(entry) = pins.get_mut(&pin_id) {
-                let mut handle = entry.write();
+                let mut handle = entry
+                    .write()
+                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
                 if let Some(listener) = handle.listener.take() {
                     drop(listener);
@@ -337,7 +346,10 @@ impl GpioBackend for LibgpiodBackend {
 
         match pins.entry(pin_id.into()) {
             Entry::Occupied(mut entry) => {
-                let mut handle = entry.get_mut().write();
+                let mut handle = entry
+                    .get_mut()
+                    .write()
+                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
                 let line_settings = Self::make_line_settings(settings)?;
                 let line_cfg = Self::make_line_config(handle.line, line_settings)?;
@@ -372,23 +384,27 @@ impl GpioBackend for LibgpiodBackend {
                 )));
             }
         }
-
         Ok(())
     }
 
     fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
-        let pins = self.pins.read();
+        let pins = self
+            .pins
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let handle_lock = pins
             .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let handle = handle_lock.read();
+        let handle = handle_lock
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+
         let value = handle
             .gpiod_handle
             .lock()
             .request
             .value(handle.line)
             .map_err(|e| AppError::Gpio(format!("get value: {e}")))?;
-
         Ok(match value {
             line::Value::InActive => 0,
             line::Value::Active => 1,
@@ -396,11 +412,16 @@ impl GpioBackend for LibgpiodBackend {
     }
 
     fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
-        let pins = self.pins.read();
+        let pins = self
+            .pins
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let handle_lock = pins
             .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
-        let handle = handle_lock.read();
+        let handle = handle_lock
+            .read()
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if !handle.settings.state.is_writable() {
             return Err(AppError::InvalidState(

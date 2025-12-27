@@ -1,8 +1,8 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{JoinHandle, yield_now};
+use std::sync::Arc;
+use std::thread::{yield_now, JoinHandle};
 use std::time::Duration;
 
 use libgpiod::{chip::Chip, line, line::EventClock, request};
@@ -330,7 +330,7 @@ impl GpioBackend for LibgpiodBackend {
             }
         };
 
-        match pins.entry(pin_id.to_string()) {
+        match pins.entry(pin_id.into()) {
             Entry::Occupied(mut entry) => {
                 let mut handle = entry.get_mut().write();
 
@@ -399,7 +399,7 @@ impl GpioBackend for LibgpiodBackend {
 
         if !handle.settings.state.is_writable() {
             return Err(AppError::InvalidState(
-                "pin must be in output mode to set value".to_string(),
+                "pin must be in output mode to set value".into(),
             ));
         }
 

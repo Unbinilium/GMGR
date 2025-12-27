@@ -1,6 +1,6 @@
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, collections::HashSet, fs, path::Path};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HttpConfig {
@@ -10,9 +10,11 @@ pub struct HttpConfig {
     pub timeout: u64,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Hash, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GpioCapability {
+    Error,
+    Disabled,
     PushPull,
     OpenDrain,
     OpenSource,
@@ -41,13 +43,13 @@ pub struct PinConfig {
     pub name: String,
     pub chip: String,
     pub line: u32,
-    pub capabilities: Vec<GpioCapability>,
+    pub capabilities: HashSet<GpioCapability>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     pub http: HttpConfig,
-    pub gpios: HashMap<String, PinConfig>,
+    pub gpios: HashMap<u32, PinConfig>,
     pub broadcast_capacity: usize,
     pub event_history_capacity: usize,
 }

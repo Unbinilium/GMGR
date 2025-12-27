@@ -1,12 +1,12 @@
 use crate::config::EdgeDetect;
 use crate::error::AppError;
 use crate::gpio::{EdgeEvent, GpioBackend, GpioManager, GpioState, PinSettings};
-use actix::prelude::*;
 use actix_web::{HttpRequest, HttpResponse, Responder, guard, http::Method, web};
-use actix_web_actors::ws;
+use actix_ws::{Message, MessageStream, Session};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -34,57 +34,50 @@ struct EventsQuery {
     limit: Option<usize>,
 }
 
-struct EventWs {
+async fn handle_event_websocket(
+    mut session: Session,
+    mut client_stream: MessageStream,
     rx: broadcast::Receiver<EdgeEvent>,
-    pin_filter: Option<String>,
-}
+    pin_filter: Option<u32>,
+) {
+    let mut events = BroadcastStream::new(rx);
 
-impl Actor for EventWs {
-    type Context = ws::WebsocketContext<Self>;
+    loop {
+        tokio::select! {
+            msg = client_stream.recv() => {
+                let Some(msg) = msg else { break; };
 
-    fn started(&mut self, ctx: &mut Self::Context) {
-        let stream = BroadcastStream::new(self.rx.resubscribe());
-        ctx.add_stream(stream);
-    }
-}
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for EventWs {
-    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match msg {
-            Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Text(_)) | Ok(ws::Message::Binary(_)) => {
-                // ignore incoming data from clients
-            }
-            Ok(ws::Message::Close(reason)) => ctx.close(reason),
-            Ok(ws::Message::Pong(_)) => {}
-            Ok(ws::Message::Continuation(_)) => {}
-            Err(_) => ctx.stop(),
-            _ => {}
-        }
-    }
-}
-
-impl StreamHandler<Result<EdgeEvent, BroadcastStreamRecvError>> for EventWs {
-    fn handle(
-        &mut self,
-        item: Result<EdgeEvent, BroadcastStreamRecvError>,
-        ctx: &mut Self::Context,
-    ) {
-        match item {
-            Ok(event) => {
-                if self
-                    .pin_filter
-                    .as_ref()
-                    .map(|p| p == &event.pin_id)
-                    .unwrap_or(true)
-                {
-                    if let Ok(text) = serde_json::to_string(&event) {
-                        ctx.text(text);
+                match msg {
+                    Ok(Message::Ping(bytes)) => {
+                        let _ = session.pong(&bytes).await;
                     }
+                    Ok(Message::Close(reason)) => {
+                        let _ = session.close(reason).await;
+                        break;
+                    }
+                    Ok(Message::Text(_))
+                    | Ok(Message::Binary(_))
+                    | Ok(Message::Pong(_))
+                    | Ok(Message::Continuation(_))
+                    | Ok(Message::Nop) => {}
+                    Err(_) => break,
                 }
             }
-            Err(BroadcastStreamRecvError::Lagged(_)) => {
-                // drop lagged messages silently
+            event = events.next() => {
+                let Some(event) = event else { break; };
+
+                match event {
+                    Ok(event) => {
+                        if pin_filter.as_ref().map(|p| *p == event.pin_id).unwrap_or(true) {
+                            if let Ok(text) = serde_json::to_string(&event) {
+                                if session.text(text).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(BroadcastStreamRecvError::Lagged(_)) => {}
+                }
             }
         }
     }
@@ -181,10 +174,7 @@ async fn pin_descriptor<B: GpioBackend + 'static>(
     req: HttpRequest,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let desc = state.manager.get_pin_descriptor(pin_id).await?;
     Ok(web::Json(desc))
 }
@@ -193,10 +183,7 @@ async fn pin_info<B: GpioBackend + 'static>(
     req: HttpRequest,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let info = state.manager.get_pin_info(pin_id).await?;
     Ok(web::Json(info))
 }
@@ -205,10 +192,7 @@ async fn get_settings<B: GpioBackend + 'static>(
     req: HttpRequest,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let settings = state.manager.get_pin_settings(pin_id).await?;
     Ok(web::Json(settings))
 }
@@ -218,11 +202,7 @@ async fn set_settings<B: GpioBackend + 'static>(
     body: web::Bytes,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
-
+    let pin_id = parse_pin_id(&req)?;
     let current = state.manager.get_pin_settings(pin_id).await?;
     let merged = parse_settings_payload(&body, current)?;
     state.manager.set_pin_settings(pin_id, &merged).await?;
@@ -233,10 +213,7 @@ async fn get_value<B: GpioBackend + 'static>(
     req: HttpRequest,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let value = state.manager.read_value(pin_id).await?;
     Ok(HttpResponse::Ok()
         .content_type("application/json")
@@ -248,10 +225,7 @@ async fn set_value<B: GpioBackend + 'static>(
     body: web::Bytes,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let value = parse_value_payload(&body)?;
     state.manager.write_value(pin_id, value).await?;
     Ok(HttpResponse::Ok())
@@ -261,15 +235,11 @@ async fn get_last_event<B: GpioBackend + 'static>(
     req: HttpRequest,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let last = state.manager.get_last_event(pin_id).await?;
-    if let Some(event) = last {
-        Ok(HttpResponse::Ok().json(event))
-    } else {
-        Ok(HttpResponse::Ok().finish())
+    match last {
+        Some(event) => Ok(HttpResponse::Ok().json(event)),
+        None => Ok(HttpResponse::Ok().finish()),
     }
 }
 
@@ -278,12 +248,8 @@ async fn get_events<B: GpioBackend + 'static>(
     query: web::Query<EventsQuery>,
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
-    let pin_id = req
-        .match_info()
-        .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = parse_pin_id(&req)?;
     let events = state.manager.get_events(pin_id, query.limit).await?;
-
     Ok(web::Json(events))
 }
 
@@ -293,19 +259,20 @@ async fn events_ws_all<B: GpioBackend + 'static>(
     state: web::Data<AppState<B>>,
 ) -> Result<HttpResponse, AppError> {
     let rx = state.manager.subscribe_events();
-    let session = EventWs {
-        rx,
-        pin_filter: None,
-    };
+    let (response, session, client_stream) = actix_ws::handle(&req, stream)
+        .map_err(|e| AppError::Gpio(format!("websocket error: {e}")))?;
 
-    ws::start(session, &req, stream).map_err(|e| AppError::Gpio(format!("websocket error: {e}")))
+    actix_web::rt::spawn(async move {
+        handle_event_websocket(session, client_stream, rx, None).await;
+    });
+
+    Ok(response)
 }
 
 fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
     if body.is_empty() {
         return Err(AppError::InvalidValue("empty value payload".to_string()));
     }
-
     if let Ok(text) = std::str::from_utf8(body) {
         match text.trim() {
             "0" => return Ok(0),
@@ -313,20 +280,28 @@ fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
             _ => {}
         }
     }
-
     Err(AppError::InvalidValue(
         "value payload must be 0 or 1".to_string(),
     ))
+}
+
+fn parse_pin_id(req: &HttpRequest) -> Result<u32, AppError> {
+    let pin_id = req
+        .match_info()
+        .get("pin_id")
+        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+    let pin_id = pin_id
+        .parse::<u32>()
+        .map_err(|_| AppError::InvalidValue("invalid pin id".to_string()))?;
+    Ok(pin_id)
 }
 
 fn parse_settings_payload(body: &[u8], current: PinSettings) -> Result<PinSettings, AppError> {
     if body.is_empty() {
         return Err(AppError::InvalidValue("empty settings payload".to_string()));
     }
-
     let payload: SettingsPayload = serde_json::from_slice(body)
         .map_err(|e| AppError::InvalidValue(format!("invalid settings payload: {e}")))?;
-
     let mut merged = current;
     if let Some(state) = payload.state {
         merged.state = state;
@@ -337,7 +312,6 @@ fn parse_settings_payload(body: &[u8], current: PinSettings) -> Result<PinSettin
     if let Some(debounce) = payload.debounce_ms {
         merged.debounce_ms = debounce;
     }
-
     Ok(merged)
 }
 

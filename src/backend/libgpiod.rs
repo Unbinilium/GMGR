@@ -16,7 +16,7 @@ const LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY: usize = 32;
 const LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS: Duration = Duration::from_millis(100);
 
 pub struct LibgpiodBackend {
-    pins: RwLock<HashMap<String, RwLock<PinHandle>>>, // keyed by pin id
+    pins: RwLock<HashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
 }
 
 struct PinHandle {
@@ -82,13 +82,12 @@ struct EdgeListener {
 
 impl EdgeListener {
     fn new(
-        pin_id: &str,
+        pin_id: u32,
         gpiod_handle: Arc<FairMutex<GpiodHandle>>,
         handler: EventHandler,
     ) -> Result<Self, AppError> {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_flag = cancel.clone();
-        let pin_id = pin_id.to_string();
         let mut buffer = request::Buffer::new(LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY)
             .map_err(|e| AppError::Gpio(format!("event buffer: {e}")))?;
 
@@ -282,10 +281,10 @@ impl LibgpiodBackend {
 }
 
 impl GpioBackend for LibgpiodBackend {
-    fn get_settings(&self, pin_id: &str) -> Result<PinSettings, AppError> {
+    fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError> {
         let pins = self.pins.read();
 
-        match pins.get(pin_id) {
+        match pins.get(&pin_id) {
             None => Ok(PinSettings::default()),
             Some(handle_lock) => {
                 let handle = handle_lock.read();
@@ -296,7 +295,7 @@ impl GpioBackend for LibgpiodBackend {
 
     fn set_settings(
         &self,
-        pin_id: &str,
+        pin_id: u32,
         pin: &PinConfig,
         settings: &PinSettings,
         event_handler: Option<EventHandler>,
@@ -306,7 +305,7 @@ impl GpioBackend for LibgpiodBackend {
         let mut pins = self.pins.write();
 
         if settings.edge == EdgeDetect::None {
-            if let Some(entry) = pins.get_mut(pin_id) {
+            if let Some(entry) = pins.get_mut(&pin_id) {
                 let mut handle = entry.write();
 
                 if let Some(listener) = handle.listener.take() {
@@ -316,7 +315,7 @@ impl GpioBackend for LibgpiodBackend {
         }
 
         if settings.state == GpioState::Disabled {
-            if let Some(entry) = pins.remove(pin_id) {
+            if let Some(entry) = pins.remove(&pin_id) {
                 drop(entry);
             }
 
@@ -324,7 +323,7 @@ impl GpioBackend for LibgpiodBackend {
         }
 
         let get_listener = |edge: EdgeDetect,
-                            pin_id: &str,
+                            pin_id: u32,
                             gpiod_handle: Arc<FairMutex<GpiodHandle>>,
                             handler: Option<EventHandler>|
          -> Result<Option<EdgeListener>, AppError> {
@@ -377,10 +376,10 @@ impl GpioBackend for LibgpiodBackend {
         Ok(())
     }
 
-    fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
+    fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
         let pins = self.pins.read();
         let handle_lock = pins
-            .get(pin_id)
+            .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let handle = handle_lock.read();
         let value = handle
@@ -396,10 +395,10 @@ impl GpioBackend for LibgpiodBackend {
         })
     }
 
-    fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
+    fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
         let pins = self.pins.read();
         let handle_lock = pins
-            .get(pin_id)
+            .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let handle = handle_lock.read();
 

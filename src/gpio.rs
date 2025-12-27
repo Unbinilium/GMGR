@@ -1,7 +1,7 @@
 use crate::config::{AppConfig, EdgeDetect, GpioCapability, PinConfig};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -9,18 +9,7 @@ use tokio::sync::broadcast;
 
 pub type GpioManager<B> = GenericGpioManager<B>;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum GpioState {
-    Error,
-    Disabled,
-    PushPull,
-    OpenDrain,
-    OpenSource,
-    Floating,
-    PullUp,
-    PullDown,
-}
+pub type GpioState = GpioCapability;
 
 impl GpioState {
     pub fn is_writable(&self) -> bool {
@@ -40,14 +29,14 @@ impl GpioState {
 
 pub struct EventCallbackHandler {
     event_tx: broadcast::Sender<EdgeEvent>,
-    event_history: RwLock<HashMap<String, VecDeque<EdgeEvent>>>,
+    event_history: RwLock<HashMap<u32, VecDeque<EdgeEvent>>>,
     event_history_capacity: usize,
 }
 
 impl EventCallbackHandler {
     pub fn new(
         event_tx: broadcast::Sender<EdgeEvent>,
-        event_history: RwLock<HashMap<String, VecDeque<EdgeEvent>>>,
+        event_history: RwLock<HashMap<u32, VecDeque<EdgeEvent>>>,
         event_history_capacity: usize,
     ) -> Self {
         Self {
@@ -74,7 +63,7 @@ pub type EventHandler = Arc<EventCallbackHandler>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EdgeEvent {
-    pub pin_id: String,
+    pub pin_id: u32,
     pub edge: EdgeDetect,
     pub timestamp_ms: u64,
 }
@@ -103,19 +92,19 @@ pub struct PinDescriptor {
 }
 
 pub trait GpioBackend: Send + Sync {
-    fn get_settings(&self, pin_id: &str) -> Result<PinSettings, AppError>;
+    fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError>;
 
     fn set_settings(
         &self,
-        pin_id: &str,
+        pin_id: u32,
         pin: &PinConfig,
         settings: &PinSettings,
         event_callback: Option<EventHandler>,
     ) -> Result<(), AppError>;
 
-    fn read_value(&self, pin_id: &str) -> Result<u8, AppError>;
+    fn read_value(&self, pin_id: u32) -> Result<u8, AppError>;
 
-    fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError>;
+    fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError>;
 }
 
 pub struct GenericGpioManager<B: GpioBackend> {
@@ -143,32 +132,31 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         }
     }
 
-    fn pin_config(&self, pin_id: &str) -> Result<&PinConfig, AppError> {
+    fn pin_config(&self, pin_id: u32) -> Result<&PinConfig, AppError> {
         self.config
             .gpios
-            .get(pin_id)
+            .get(&pin_id)
             .ok_or_else(|| AppError::NotFoundPin(pin_id.to_string()))
     }
 
-    fn capability_matches(state: GpioState, caps: &[GpioCapability]) -> bool {
+    fn capability_matches(state: GpioState, caps: &HashSet<GpioState>) -> bool {
         match state {
             GpioState::Error => false,
             GpioState::Disabled => true,
-            GpioState::PushPull => caps.contains(&GpioCapability::PushPull),
-            GpioState::OpenDrain => caps.contains(&GpioCapability::OpenDrain),
-            GpioState::OpenSource => caps.contains(&GpioCapability::OpenSource),
-            GpioState::Floating => caps.contains(&GpioCapability::Floating),
-            GpioState::PullUp => caps.contains(&GpioCapability::PullUp),
-            GpioState::PullDown => caps.contains(&GpioCapability::PullDown),
+            _ => match state {
+                GpioState::Error => false,
+                GpioState::Disabled => true,
+                _ => caps.contains(&state),
+            },
         }
     }
 
-    pub async fn list_pins(&self) -> HashMap<String, PinDescriptor> {
+    pub async fn list_pins(&self) -> HashMap<u32, PinDescriptor> {
         self.config
             .gpios
             .iter()
             .map(|(id, cfg)| {
-                let settings = self.backend.get_settings(id).unwrap_or_default();
+                let settings = self.backend.get_settings(*id).unwrap_or_default();
                 (
                     id.clone(),
                     PinDescriptor {
@@ -180,7 +168,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
             .collect()
     }
 
-    pub async fn get_pin_descriptor(&self, pin_id: &str) -> Result<PinDescriptor, AppError> {
+    pub async fn get_pin_descriptor(&self, pin_id: u32) -> Result<PinDescriptor, AppError> {
         let cfg = self.pin_config(pin_id)?.clone();
         let settings = self.backend.get_settings(pin_id).unwrap_or_default();
         Ok(PinDescriptor {
@@ -189,18 +177,18 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         })
     }
 
-    pub async fn get_pin_info(&self, pin_id: &str) -> Result<PinConfig, AppError> {
+    pub async fn get_pin_info(&self, pin_id: u32) -> Result<PinConfig, AppError> {
         self.pin_config(pin_id).cloned()
     }
 
-    pub async fn get_pin_settings(&self, pin_id: &str) -> Result<PinSettings, AppError> {
+    pub async fn get_pin_settings(&self, pin_id: u32) -> Result<PinSettings, AppError> {
         self.pin_config(pin_id)?;
         self.backend.get_settings(pin_id)
     }
 
     pub async fn set_pin_settings(
         &self,
-        pin_id: &str,
+        pin_id: u32,
         settings: &PinSettings,
     ) -> Result<(), AppError> {
         let cfg = self.pin_config(pin_id)?;
@@ -226,12 +214,12 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         self.backend.set_settings(pin_id, cfg, &settings, callback)
     }
 
-    pub async fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
+    pub async fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
         let value = self.backend.read_value(pin_id)?;
         Ok(value)
     }
 
-    pub async fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
+    pub async fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
         if value > 1 {
             return Err(AppError::InvalidValue("value must be 0 or 1".into()));
         }
@@ -246,13 +234,13 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
     pub async fn get_events(
         &self,
-        pin_id: &str,
+        pin_id: u32,
         limit: Option<usize>,
     ) -> Result<Vec<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
         let map = self.event_handler.event_history.read();
         Ok(map
-            .get(pin_id)
+            .get(&pin_id)
             .map(|d| {
                 let events: Vec<EdgeEvent> = if let Some(lim) = limit {
                     d.iter().rev().take(lim).cloned().collect()
@@ -264,9 +252,9 @@ impl<B: GpioBackend> GenericGpioManager<B> {
             .unwrap_or_default())
     }
 
-    pub async fn get_last_event(&self, pin_id: &str) -> Result<Option<EdgeEvent>, AppError> {
+    pub async fn get_last_event(&self, pin_id: u32) -> Result<Option<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
         let map = self.event_handler.event_history.read();
-        Ok(map.get(pin_id).and_then(|d| d.back().cloned()))
+        Ok(map.get(&pin_id).and_then(|d| d.back().cloned()))
     }
 }

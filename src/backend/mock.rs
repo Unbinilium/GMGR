@@ -8,7 +8,7 @@ use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
 #[derive(Default)]
 pub struct MockGpioBackend {
-    pins: RwLock<HashMap<String, Mutex<MockPinState>>>, // keyed by pin id
+    pins: RwLock<HashMap<u32, Mutex<MockPinState>>>, // keyed by pin id
 }
 
 #[derive(Clone)]
@@ -20,13 +20,13 @@ struct MockPinState {
 }
 
 impl GpioBackend for MockGpioBackend {
-    fn get_settings(&self, pin_id: &str) -> Result<PinSettings, AppError> {
+    fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError> {
         let pins = self
             .pins
             .read()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
-        if let Some(pin_lock) = pins.get(pin_id) {
+        if let Some(pin_lock) = pins.get(&pin_id) {
             let pin = pin_lock
                 .lock()
                 .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
@@ -38,7 +38,7 @@ impl GpioBackend for MockGpioBackend {
 
     fn set_settings(
         &self,
-        pin_id: &str,
+        pin_id: u32,
         _pin: &PinConfig,
         settings: &PinSettings,
         event_handler: Option<EventHandler>,
@@ -48,7 +48,7 @@ impl GpioBackend for MockGpioBackend {
             .write()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
-        let entry = pins.entry(pin_id.to_string()).or_insert_with(|| {
+        let entry = pins.entry(pin_id).or_insert_with(|| {
             Mutex::new(MockPinState {
                 settings: PinSettings::default(),
                 value: 0,
@@ -75,13 +75,13 @@ impl GpioBackend for MockGpioBackend {
         Ok(())
     }
 
-    fn read_value(&self, pin_id: &str) -> Result<u8, AppError> {
+    fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
         let mut pins = self
             .pins
             .write()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let entry = pins
-            .get_mut(pin_id)
+            .get_mut(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let pin = entry
             .lock()
@@ -89,19 +89,19 @@ impl GpioBackend for MockGpioBackend {
 
         if pin.settings.state == GpioState::Disabled {
             return Err(AppError::InvalidState(
-                "pin is disabled and cannot be read".to_string(),
+                "pin is disabled and cannot be read".into(),
             ));
         }
         Ok(pin.value)
     }
 
-    fn write_value(&self, pin_id: &str, value: u8) -> Result<(), AppError> {
+    fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
         let mut pins = self
             .pins
             .write()
             .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let entry = pins
-            .get_mut(pin_id)
+            .get_mut(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let mut pin = entry
             .lock()
@@ -132,7 +132,7 @@ impl GpioBackend for MockGpioBackend {
                     pin.last_event = Some(now);
                     if let Some(h) = &pin.handler {
                         h.dispatch(EdgeEvent {
-                            pin_id: pin_id.to_string(),
+                            pin_id,
                             edge: edge_kind,
                             timestamp_ms: epoch_millis(),
                         });

@@ -186,15 +186,21 @@ impl LibgpiodBackend {
                 Ok(())
             }
             _ => {
-                if !settings.state.is_edge_detectable() && settings.edge != EdgeDetect::None {
-                    return Err(AppError::InvalidState(
-                        "edge detection requires an input-capable state".into(),
-                    ));
-                }
-                if settings.edge == EdgeDetect::None && settings.debounce_ms != 0 {
-                    return Err(AppError::InvalidState(
-                        "debounce requires edge detection to be enabled".into(),
-                    ));
+                match settings.edge {
+                    EdgeDetect::None => {
+                        if settings.debounce_ms != 0 {
+                            return Err(AppError::InvalidState(
+                                "debounce requires edge detection to be enabled".into(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        if !settings.state.is_edge_detectable() {
+                            return Err(AppError::InvalidState(
+                                "edge detection requires an input-capable state".into(),
+                            ));
+                        }
+                    }
                 }
                 Ok(())
             }

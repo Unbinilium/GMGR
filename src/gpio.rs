@@ -205,13 +205,13 @@ impl<B: GpioBackend> GenericGpioManager<B> {
             ));
         }
 
-        let callback = if settings.edge != EdgeDetect::None {
+        let handler = if settings.edge != EdgeDetect::None {
             Some(self.event_handler.clone())
         } else {
             None
         };
 
-        self.backend.set_settings(pin_id, cfg, &settings, callback)
+        self.backend.set_settings(pin_id, cfg, &settings, handler)
     }
 
     pub async fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {

@@ -29,14 +29,14 @@ impl GpioState {
 
 pub struct EventCallbackHandler {
     event_tx: broadcast::Sender<EdgeEvent>,
-    event_history: RwLock<HashMap<u32, VecDeque<EdgeEvent>>>,
+    event_history: HashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
     event_history_capacity: usize,
 }
 
 impl EventCallbackHandler {
     pub fn new(
         event_tx: broadcast::Sender<EdgeEvent>,
-        event_history: RwLock<HashMap<u32, VecDeque<EdgeEvent>>>,
+        event_history: HashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
         event_history_capacity: usize,
     ) -> Self {
         Self {
@@ -48,12 +48,14 @@ impl EventCallbackHandler {
 
     pub fn dispatch(&self, event: EdgeEvent) {
         {
-            let mut map = self.event_history.write();
-            let deque: &mut VecDeque<EdgeEvent> = map.entry(event.pin_id.clone()).or_default();
-            while deque.len() >= self.event_history_capacity {
-                deque.pop_front();
+            let event = event.clone();
+            if let Some(history_lock) = self.event_history.get(&event.pin_id) {
+                let mut history = history_lock.write();
+                while history.len() >= self.event_history_capacity {
+                    history.pop_front();
+                }
+                history.push_back(event);
             }
-            deque.push_back(event.clone());
         }
         let _ = self.event_tx.send(event);
     }
@@ -118,11 +120,11 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         let (event_tx, _) = broadcast::channel(config.broadcast_capacity);
         let mut history = HashMap::new();
         for id in config.gpios.keys() {
-            history.insert(id.clone(), VecDeque::new());
+            history.insert(id.clone(), RwLock::new(VecDeque::new()));
         }
         let event_handler = Arc::new(EventCallbackHandler::new(
             event_tx,
-            RwLock::new(history),
+            history,
             config.event_history_capacity,
         ));
         Self {
@@ -238,14 +240,14 @@ impl<B: GpioBackend> GenericGpioManager<B> {
         limit: Option<usize>,
     ) -> Result<Vec<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
-        let map = self.event_handler.event_history.read();
+        let map = &self.event_handler.event_history;
         Ok(map
             .get(&pin_id)
             .map(|d| {
                 let events: Vec<EdgeEvent> = if let Some(lim) = limit {
-                    d.iter().rev().take(lim).cloned().collect()
+                    d.read().iter().rev().take(lim).cloned().collect()
                 } else {
-                    d.iter().cloned().collect()
+                    d.read().iter().cloned().collect()
                 };
                 events.into_iter().rev().collect()
             })
@@ -254,7 +256,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
     pub async fn get_last_event(&self, pin_id: u32) -> Result<Option<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
-        let map = self.event_handler.event_history.read();
-        Ok(map.get(&pin_id).and_then(|d| d.back().cloned()))
+        let map = &self.event_handler.event_history;
+        Ok(map.get(&pin_id).and_then(|d| d.read().back().cloned()))
     }
 }

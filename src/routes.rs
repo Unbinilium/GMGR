@@ -77,9 +77,9 @@ async fn handle_event_websocket(
                         }
                     }
                     Err(BroadcastStreamRecvError::Lagged(_)) => {
-                        eprintln!("websocket client lagged behind, closing connection");
-                        let _ = session.close(None).await;
-                        break;
+                        if session.text(AppError::Gpio("event stream lagged".into()).to_string()).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }

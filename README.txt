@@ -25,7 +25,7 @@
 [Configuration]
     Edit the config.json file to set up GPIO pins and server settings.
 
-[REST-API]
+[RESTful-API]
     /gpios - GET: list all pins with their full description
     /gpios/events - GET: websocket stream events for all pins
     /gpio/{pin_id} - GET: get pin full description

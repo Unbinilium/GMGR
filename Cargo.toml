@@ -3,6 +3,10 @@ name = "gmgr"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+lto = true
+strip = true
+
 [dependencies]
 actix = "0.13.5"
 actix-web = { version = "4.12.1", features = ["macros"] }

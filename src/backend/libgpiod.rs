@@ -43,9 +43,6 @@ impl PinHandle {
 }
 
 struct GpiodHandle {
-    // keep the chip alive for as long as the request is in scope
-    // drop order is request then chip (reverse of declaration)
-    _chip: Chip,
     request: request::Request,
 }
 
@@ -53,10 +50,7 @@ impl GpiodHandle {
     fn new(chip: &str, line_cfg: &line::Config) -> Result<Self, AppError> {
         let chip = Self::open_chip(chip)?;
         let request = Self::request_lines(&chip, line_cfg)?;
-        Ok(Self {
-            _chip: chip,
-            request,
-        })
+        Ok(Self { request })
     }
 
     fn open_chip(path: &str) -> Result<Chip, AppError> {

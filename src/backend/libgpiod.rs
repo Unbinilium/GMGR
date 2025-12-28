@@ -118,13 +118,11 @@ impl EdgeListener {
                         continue;
                     }
                 };
-
                 for evt in events {
                     let evt = match evt {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
-
                     let edge_kind = match evt.event_type() {
                         Ok(line::EdgeKind::Rising) => EdgeDetect::Rising,
                         Ok(line::EdgeKind::Falling) => EdgeDetect::Falling,
@@ -322,7 +320,6 @@ impl GpioBackend for LibgpiodBackend {
                 }
             }
         }
-
         if settings.state == GpioState::Disabled {
             if let Some(entry) = pins.remove(&pin_id) {
                 drop(entry);
@@ -333,11 +330,11 @@ impl GpioBackend for LibgpiodBackend {
 
         let get_listener = |edge: EdgeDetect,
                             pin_id: u32,
-                            gpiod_handle: Arc<FairMutex<GpiodHandle>>,
+                            gpiod_handle: &Arc<FairMutex<GpiodHandle>>,
                             handler: Option<EventHandler>|
          -> Result<Option<EdgeListener>, AppError> {
             if edge != EdgeDetect::None && handler.is_some() {
-                let listener = EdgeListener::new(pin_id, gpiod_handle, handler.unwrap())?;
+                let listener = EdgeListener::new(pin_id, gpiod_handle.clone(), handler.unwrap())?;
                 Ok(Some(listener))
             } else {
                 Ok(None)
@@ -361,12 +358,8 @@ impl GpioBackend for LibgpiodBackend {
                     .map_err(|e| AppError::Gpio(format!("reconfigure lines: {e}")))?;
                 handle.settings = settings.clone();
                 if handle.listener.is_none() {
-                    handle.listener = get_listener(
-                        settings.edge,
-                        pin_id,
-                        handle.gpiod_handle.clone(),
-                        event_handler,
-                    )?;
+                    handle.listener =
+                        get_listener(settings.edge, pin_id, &handle.gpiod_handle, event_handler)?;
                 }
             }
             Entry::Vacant(entry) => {
@@ -374,8 +367,7 @@ impl GpioBackend for LibgpiodBackend {
                 let line_cfg = Self::make_line_config(pin.line, line_settings)?;
                 let gpiod_handle =
                     Arc::new(FairMutex::new(GpiodHandle::new(&pin.chip, &line_cfg)?));
-                let listener =
-                    get_listener(settings.edge, pin_id, gpiod_handle.clone(), event_handler)?;
+                let listener = get_listener(settings.edge, pin_id, &gpiod_handle, event_handler)?;
                 entry.insert(RwLock::new(PinHandle::new(
                     pin.line,
                     settings.clone(),

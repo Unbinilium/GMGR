@@ -200,19 +200,16 @@ impl<B: GpioBackend> GenericGpioManager<B> {
                 "state not supported by pin {pin_id}"
             )));
         }
-
-        if settings.edge != EdgeDetect::None && !settings.state.is_edge_detectable() {
-            return Err(AppError::InvalidState(
-                "edge detection requires an input-capable state".into(),
-            ));
-        }
-
         let handler = if settings.edge != EdgeDetect::None {
+            if !settings.state.is_edge_detectable() {
+                return Err(AppError::InvalidState(format!(
+                    "edge detection requires an input-capable state by pin {pin_id}",
+                )));
+            }
             Some(self.event_handler.clone())
         } else {
             None
         };
-
         self.backend.set_settings(pin_id, cfg, &settings, handler)
     }
 

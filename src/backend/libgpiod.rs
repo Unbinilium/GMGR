@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -6,24 +6,24 @@ use std::thread::{JoinHandle, yield_now};
 use std::time::Duration;
 
 use libgpiod::{chip::Chip, line, line::EventClock, request};
-use parking_lot::FairMutex;
+use parking_lot::{FairMutex, RwLock as PLRwLock, RwLockUpgradableReadGuard};
 
 use crate::config::{EdgeDetect, PinConfig};
 use crate::error::AppError;
 use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
-const LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY: usize = 32;
+const LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY: usize = 64;
 const LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS: Duration = Duration::from_millis(10);
 
 pub struct LibgpiodBackend {
-    pins: RwLock<HashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
+    pins: PLRwLock<HashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
 }
 
 struct PinHandle {
     line: u32,
     settings: PinSettings,
     gpiod_handle: Arc<FairMutex<GpiodHandle>>,
-    listener: Option<EdgeListener>,
+    listener: Option<EdgeListener>, // drop in reverse order
 }
 
 impl PinHandle {
@@ -151,7 +151,7 @@ impl Drop for EdgeListener {
 impl LibgpiodBackend {
     pub fn new() -> Result<Self, AppError> {
         Ok(Self {
-            pins: RwLock::new(HashMap::new()),
+            pins: PLRwLock::new(HashMap::new()),
         })
     }
 
@@ -273,10 +273,7 @@ impl LibgpiodBackend {
 
 impl GpioBackend for LibgpiodBackend {
     fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        let pins = self.pins.read();
 
         match pins.get(&pin_id) {
             None => Ok(PinSettings::default()),
@@ -296,32 +293,6 @@ impl GpioBackend for LibgpiodBackend {
         settings: &PinSettings,
         event_handler: Option<EventHandler>,
     ) -> Result<(), AppError> {
-        Self::validate_pin_settings(settings)?;
-
-        let mut pins = self
-            .pins
-            .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-        if settings.edge == EdgeDetect::None {
-            if let Some(entry) = pins.get_mut(&pin_id) {
-                let mut handle = entry
-                    .write()
-                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
-
-                if let Some(listener) = handle.listener.take() {
-                    drop(listener);
-                }
-            }
-        }
-        if settings.state == GpioState::Disabled {
-            if let Some(entry) = pins.remove(&pin_id) {
-                drop(entry);
-            }
-
-            return Ok(());
-        }
-
         let get_listener = |edge: EdgeDetect,
                             pin_id: u32,
                             gpiod_handle: &Arc<FairMutex<GpiodHandle>>,
@@ -335,49 +306,75 @@ impl GpioBackend for LibgpiodBackend {
             }
         };
 
-        match pins.entry(pin_id.into()) {
-            Entry::Occupied(mut entry) => {
-                let mut handle = entry
-                    .get_mut()
+        Self::validate_pin_settings(settings)?;
+
+        let pins = self.pins.upgradable_read();
+
+        // fast path for disabling pin
+        if settings.state == GpioState::Disabled {
+            if let Some(_) = pins.get(&pin_id) {
+                let _ = RwLockUpgradableReadGuard::upgrade(pins).remove(&pin_id);
+            }
+            return Ok(());
+        }
+
+        match pins.get(&pin_id) {
+            Some(handle) => {
+                let mut handle = handle
                     .write()
                     .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
+                // drop listener if disabling edge detection before reconfiguring lines
+                if settings.edge == EdgeDetect::None
+                    && let Some(listener) = handle.listener.take()
+                {
+                    drop(listener);
+                }
+
                 let line_settings = Self::make_line_settings(settings)?;
                 let line_cfg = Self::make_line_config(handle.line, line_settings)?;
+
                 handle
                     .gpiod_handle
                     .lock()
                     .request
                     .reconfigure_lines(&line_cfg)
                     .map_err(|e| AppError::Gpio(format!("reconfigure lines: {e}")))?;
-                handle.settings = settings.clone();
+
                 if handle.listener.is_none() {
                     handle.listener =
                         get_listener(settings.edge, pin_id, &handle.gpiod_handle, event_handler)?;
                 }
+
+                handle.settings = settings.clone();
             }
-            Entry::Vacant(entry) => {
+            None => {
+                // since upgradable read lock is exclusive held by this thread, it safe to pre-allocate
+                // new pin handle without double locking
                 let line_settings = Self::make_line_settings(settings)?;
                 let line_cfg = Self::make_line_config(pin.line, line_settings)?;
+
                 let gpiod_handle =
                     Arc::new(FairMutex::new(GpiodHandle::new(&pin.chip, &line_cfg)?));
                 let listener = get_listener(settings.edge, pin_id, &gpiod_handle, event_handler)?;
-                entry.insert(RwLock::new(PinHandle::new(
+
+                let handle = RwLock::new(PinHandle::new(
                     pin.line,
                     settings.clone(),
                     gpiod_handle,
                     listener,
-                )));
+                ));
+
+                let mut pins = RwLockUpgradableReadGuard::upgrade(pins);
+                pins.insert(pin_id, handle);
             }
         }
+
         Ok(())
     }
 
     fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        let pins = self.pins.read();
         let handle_lock = pins
             .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
@@ -398,10 +395,7 @@ impl GpioBackend for LibgpiodBackend {
     }
 
     fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
-        let pins = self
-            .pins
-            .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+        let pins = self.pins.read();
         let handle_lock = pins
             .get(&pin_id)
             .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;

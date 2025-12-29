@@ -1,5 +1,5 @@
 [GMGR]
-    A simple and high concurrency GPIO management RESTful API server written in Rust.
+    A simple GPIO management RESTful API server written in Rust.
 
 [Build]
     cargo build --release --features hardware-gpio
@@ -12,7 +12,8 @@
     curl -vX GET http://localhost:8080/api/v1/gpios \
         --http2-prior-knowledge | jq
     websocat ws://localhost:8080/api/v1/gpios/events | jq
-    curl -vX GET http://localhost:8080/api/v1/gpio/1 | jq
+    curl -vX GET --unix-socket /dev/shm/gmgr.sock \
+        http://localhost/api/v1/gpio/1 | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/info | jq
     curl -vX GET http://localhost:8080/api/v1/gpio/1/settings | jq
     curl -vX POST http://localhost:8080/api/v1/gpio/1/settings \

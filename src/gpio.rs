@@ -1,12 +1,13 @@
-use crate::config::{AppConfig, EdgeDetect, GpioCapability, PinConfig};
-use crate::error::AppError;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+
+use crate::config::{AppConfig, EdgeDetect, GpioCapability, PinConfig};
+use crate::error::AppError;
 
 pub type GpioManager<B> = GenericGpioManager<B>;
 
@@ -96,7 +97,6 @@ pub struct PinDescriptor {
 
 pub trait GpioBackend: Send + Sync {
     fn get_settings(&self, pin_id: u32) -> Result<PinSettings, AppError>;
-
     fn set_settings(
         &self,
         pin_id: u32,
@@ -104,9 +104,7 @@ pub trait GpioBackend: Send + Sync {
         settings: &PinSettings,
         event_callback: Option<EventHandler>,
     ) -> Result<(), AppError>;
-
     fn read_value(&self, pin_id: u32) -> Result<u8, AppError>;
-
     fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError>;
 }
 
@@ -119,15 +117,18 @@ pub struct GenericGpioManager<B: GpioBackend> {
 impl<B: GpioBackend> GenericGpioManager<B> {
     pub fn new(config: Arc<AppConfig>, backend: Arc<B>) -> Self {
         let (event_tx, _) = broadcast::channel(config.broadcast_capacity);
+
         let mut history = FxHashMap::default();
         for id in config.gpios.keys() {
             history.insert(id.clone(), RwLock::new(VecDeque::new()));
         }
+
         let event_handler = Arc::new(EventCallbackHandler::new(
             event_tx,
             history,
             config.event_history_capacity,
         ));
+
         Self {
             config,
             backend,
@@ -174,6 +175,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
     pub async fn get_pin_descriptor(&self, pin_id: u32) -> Result<PinDescriptor, AppError> {
         let cfg = self.pin_config(pin_id)?.clone();
         let settings = self.backend.get_settings(pin_id).unwrap_or_default();
+
         Ok(PinDescriptor {
             info: cfg,
             settings,
@@ -198,33 +200,38 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
         if !Self::capability_matches(settings.state, &cfg.capabilities) {
             return Err(AppError::InvalidState(format!(
-                "state not supported by pin {pin_id}"
+                "State not supported by pin {pin_id}"
             )));
         }
+
         let handler = if settings.edge != EdgeDetect::None {
             if !settings.state.is_edge_detectable() {
                 return Err(AppError::InvalidState(format!(
-                    "edge detection requires an input-capable state by pin {pin_id}",
+                    "Edge detection requires an input-capable state by pin {pin_id}",
                 )));
             }
             Some(self.event_handler.clone())
         } else {
             None
         };
+
         self.backend.set_settings(pin_id, cfg, &settings, handler)
     }
 
     pub async fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
         let value = self.backend.read_value(pin_id)?;
+
         Ok(value)
     }
 
     pub async fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
         if value > 1 {
-            return Err(AppError::InvalidValue("value must be 0 or 1".into()));
+            return Err(AppError::InvalidValue("Value must be 0 or 1".into()));
         }
+
         self.pin_config(pin_id)?;
         self.backend.write_value(pin_id, value)?;
+
         Ok(())
     }
 
@@ -239,6 +246,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
     ) -> Result<Vec<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
         let map = &self.event_handler.event_history;
+
         Ok(map
             .get(&pin_id)
             .map(|d| {
@@ -255,6 +263,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
     pub async fn get_last_event(&self, pin_id: u32) -> Result<Option<EdgeEvent>, AppError> {
         self.pin_config(pin_id)?;
         let map = &self.event_handler.event_history;
+
         Ok(map.get(&pin_id).and_then(|d| d.read().back().cloned()))
     }
 }

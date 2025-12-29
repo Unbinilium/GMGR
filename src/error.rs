@@ -4,17 +4,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("pin not found: {0}")]
+    #[error("Pin not found: {0}")]
     NotFoundPin(String),
-    #[error("invalid state: {0}")]
+    #[error("Invalid state: {0}")]
     InvalidState(String),
-    #[error("invalid value: {0}")]
+    #[error("Invalid value: {0}")]
     InvalidValue(String),
-    #[error("permission denied: {0}")]
+    #[error("Permission denied: {0}")]
     PermissionDenied(String),
-    #[error("configuration error: {0}")]
+    #[error("Configuration error: {0}")]
     Config(String),
-    #[error("gpio error: {0}")]
+    #[error("GPIO error: {0}")]
     Gpio(String),
 }
 

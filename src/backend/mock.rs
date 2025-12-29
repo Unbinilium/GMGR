@@ -24,12 +24,12 @@ impl GpioBackend for MockGpioBackend {
         let pins = self
             .pins
             .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
 
         if let Some(pin_lock) = pins.get(&pin_id) {
             let pin = pin_lock
                 .read()
-                .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+                .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
             Ok(pin.settings.clone())
         } else {
             Ok(PinSettings::default())
@@ -46,7 +46,7 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
 
         let entry = pins.entry(pin_id).or_insert_with(|| {
             RwLock::new(MockPinState {
@@ -59,7 +59,7 @@ impl GpioBackend for MockGpioBackend {
 
         let mut pin = entry
             .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
 
         pin.settings = settings.clone();
         if settings.state == GpioState::Disabled {
@@ -79,17 +79,17 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
         let entry = pins
             .get_mut(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
         let pin = entry
             .read()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
 
         if pin.settings.state == GpioState::Disabled {
             return Err(AppError::InvalidState(
-                "pin is disabled and cannot be read".into(),
+                "Pin is disabled and cannot be read".into(),
             ));
         }
         Ok(pin.value)
@@ -99,17 +99,17 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
         let entry = pins
             .get_mut(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
         let mut pin = entry
             .write()
-            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
 
         if !pin.settings.state.is_writable() {
             return Err(AppError::InvalidState(
-                "pin must be in output mode to set value".into(),
+                "Pin must be in output mode to set value".into(),
             ));
         }
 

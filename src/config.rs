@@ -1,12 +1,14 @@
-use crate::error::AppError;
+use std::{collections::HashSet, fs, path::Path};
+
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::Path};
+
+use crate::error::AppError;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HttpConfig {
-    pub host: String,
-    pub port: u16,
+    pub unix_socket: Option<String>,
+    pub host: Option<String>,
     pub path: String,
     pub timeout: u64,
 }
@@ -58,8 +60,8 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, AppError> {
         let contents = fs::read_to_string(&path)
-            .map_err(|e| AppError::Config(format!("failed to read config: {e}")))?;
+            .map_err(|e| AppError::Config(format!("Failed to read config: {e}")))?;
         serde_json::from_str(&contents)
-            .map_err(|e| AppError::Config(format!("invalid config json: {e}")))
+            .map_err(|e| AppError::Config(format!("Invalid config json: {e}")))
     }
 }

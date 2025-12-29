@@ -1,14 +1,17 @@
-use crate::config::EdgeDetect;
-use crate::error::AppError;
-use crate::gpio::{EdgeEvent, GpioBackend, GpioManager, GpioState, PinSettings};
+use log::warn;
+use std::sync::Arc;
+
 use actix_web::{HttpRequest, HttpResponse, Responder, guard, http::Method, web};
 use actix_ws::{Message, MessageStream, Session};
 use serde::Deserialize;
-use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+
+use crate::config::EdgeDetect;
+use crate::error::AppError;
+use crate::gpio::{EdgeEvent, GpioBackend, GpioManager, GpioState, PinSettings};
 
 pub struct AppState<B: GpioBackend> {
     pub manager: Arc<GpioManager<B>>,
@@ -71,13 +74,15 @@ async fn handle_event_websocket(
                         if pin_filter.as_ref().map(|p| *p == event.pin_id).unwrap_or(true) {
                             if let Ok(text) = serde_json::to_string(&event) {
                                 if session.text(text).await.is_err() {
+                                    warn!("WebSocket client disconnected");
                                     break;
                                 }
                             }
                         }
                     }
-                    Err(BroadcastStreamRecvError::Lagged(_)) => {
-                        if session.text(AppError::Gpio("event stream lagged".into()).to_string()).await.is_err() {
+                    Err(BroadcastStreamRecvError::Lagged(n)) => {
+                        if session.text(AppError::Gpio(format!("Event stream lagged by {n} messages")).to_string()).await.is_err() {
+                            warn!("WebSocket client lagged and disconnected");
                             break;
                         }
                     }
@@ -171,6 +176,7 @@ async fn list_gpios<B: GpioBackend + 'static>(
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pins = state.manager.list_pins().await;
+
     Ok(web::Json(pins))
 }
 
@@ -180,6 +186,7 @@ async fn pin_descriptor<B: GpioBackend + 'static>(
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
     let desc = state.manager.get_pin_descriptor(pin_id).await?;
+
     Ok(web::Json(desc))
 }
 
@@ -189,6 +196,7 @@ async fn pin_info<B: GpioBackend + 'static>(
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
     let info = state.manager.get_pin_info(pin_id).await?;
+
     Ok(web::Json(info))
 }
 
@@ -198,6 +206,7 @@ async fn get_settings<B: GpioBackend + 'static>(
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
     let settings = state.manager.get_pin_settings(pin_id).await?;
+
     Ok(web::Json(settings))
 }
 
@@ -209,7 +218,9 @@ async fn set_settings<B: GpioBackend + 'static>(
     let pin_id = parse_pin_id(&req)?;
     let current = state.manager.get_pin_settings(pin_id).await?;
     let merged = parse_settings_payload(&body, current)?;
+
     state.manager.set_pin_settings(pin_id, &merged).await?;
+
     Ok(web::Json(merged))
 }
 
@@ -218,10 +229,10 @@ async fn get_value<B: GpioBackend + 'static>(
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
+
     let value = state.manager.read_value(pin_id).await?;
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .body(value.to_string()))
+
+    Ok(web::Json(value))
 }
 
 async fn set_value<B: GpioBackend + 'static>(
@@ -231,7 +242,9 @@ async fn set_value<B: GpioBackend + 'static>(
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
     let value = parse_value_payload(&body)?;
+
     state.manager.write_value(pin_id, value).await?;
+
     Ok(HttpResponse::Ok())
 }
 
@@ -240,7 +253,9 @@ async fn get_last_event<B: GpioBackend + 'static>(
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
+
     let last = state.manager.get_last_event(pin_id).await?;
+
     match last {
         Some(event) => Ok(HttpResponse::Ok().json(event)),
         None => Ok(HttpResponse::Ok().finish()),
@@ -253,7 +268,9 @@ async fn get_events<B: GpioBackend + 'static>(
     state: web::Data<AppState<B>>,
 ) -> Result<impl Responder, AppError> {
     let pin_id = parse_pin_id(&req)?;
+
     let events = state.manager.get_events(pin_id, query.limit).await?;
+
     Ok(web::Json(events))
 }
 
@@ -264,7 +281,7 @@ async fn events_ws_all<B: GpioBackend + 'static>(
 ) -> Result<HttpResponse, AppError> {
     let rx = state.manager.subscribe_events();
     let (response, session, client_stream) = actix_ws::handle(&req, stream)
-        .map_err(|e| AppError::Gpio(format!("websocket error: {e}")))?;
+        .map_err(|e| AppError::Gpio(format!("Websocket error: {e}")))?;
 
     actix_web::rt::spawn(async move {
         handle_event_websocket(session, client_stream, rx, None).await;
@@ -275,37 +292,40 @@ async fn events_ws_all<B: GpioBackend + 'static>(
 
 fn parse_value_payload(body: &[u8]) -> Result<u8, AppError> {
     if body.is_empty() {
-        return Err(AppError::InvalidValue("empty value payload".to_string()));
+        return Err(AppError::InvalidValue("Empty value payload".into()));
     }
-    if let Ok(text) = std::str::from_utf8(body) {
-        match text.trim() {
-            "0" => return Ok(0),
-            "1" => return Ok(1),
-            _ => {}
-        }
+
+    match std::str::from_utf8(body) {
+        Ok(text) => text
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| AppError::InvalidValue("Value must be an integer".into())),
+        _ => Err(AppError::InvalidValue(
+            "Value payload must be valid UTF-8".into(),
+        )),
     }
-    Err(AppError::InvalidValue(
-        "value payload must be 0 or 1".to_string(),
-    ))
 }
 
 fn parse_pin_id(req: &HttpRequest) -> Result<u32, AppError> {
     let pin_id = req
         .match_info()
         .get("pin_id")
-        .ok_or_else(|| AppError::InvalidValue("missing pin id".to_string()))?;
+        .ok_or_else(|| AppError::InvalidValue("Missing pin id".into()))?;
     let pin_id = pin_id
         .parse::<u32>()
-        .map_err(|_| AppError::InvalidValue("invalid pin id".to_string()))?;
+        .map_err(|_| AppError::InvalidValue("Invalid pin id".into()))?;
+
     Ok(pin_id)
 }
 
 fn parse_settings_payload(body: &[u8], current: PinSettings) -> Result<PinSettings, AppError> {
     if body.is_empty() {
-        return Err(AppError::InvalidValue("empty settings payload".to_string()));
+        return Err(AppError::InvalidValue("Empty settings payload".into()));
     }
+
     let payload: SettingsPayload = serde_json::from_slice(body)
-        .map_err(|e| AppError::InvalidValue(format!("invalid settings payload: {e}")))?;
+        .map_err(|e| AppError::InvalidValue(format!("Invalid settings payload: {e}")))?;
+
     let mut merged = current;
     if let Some(state) = payload.state {
         merged.state = state;

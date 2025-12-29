@@ -1,7 +1,7 @@
 {
     "http": {
-        "host": "localhost",
-        "port": 8080,
+        "unix_socket": "/dev/shm/gmgr.sock",
+        "host": "localhost:8080",
         "path": "/api/v1",
         "timeout": 30
     },

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::RwLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use crate::gpio::{EdgeEvent, EventHandler, GpioBackend, GpioState, PinSettings};
 
 #[derive(Default)]
 pub struct MockGpioBackend {
-    pins: RwLock<HashMap<u32, RwLock<MockPinState>>>, // keyed by pin id
+    pins: RwLock<FxHashMap<u32, RwLock<MockPinState>>>, // keyed by pin id
 }
 
 #[derive(Clone)]

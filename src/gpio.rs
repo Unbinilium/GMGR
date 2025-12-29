@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use tokio::sync::broadcast;
 
 pub type GpioManager<B> = GenericGpioManager<B>;
@@ -29,14 +30,14 @@ impl GpioState {
 
 pub struct EventCallbackHandler {
     event_tx: broadcast::Sender<EdgeEvent>,
-    event_history: HashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
+    event_history: FxHashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
     event_history_capacity: usize,
 }
 
 impl EventCallbackHandler {
     pub fn new(
         event_tx: broadcast::Sender<EdgeEvent>,
-        event_history: HashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
+        event_history: FxHashMap<u32, RwLock<VecDeque<EdgeEvent>>>,
         event_history_capacity: usize,
     ) -> Self {
         Self {
@@ -118,7 +119,7 @@ pub struct GenericGpioManager<B: GpioBackend> {
 impl<B: GpioBackend> GenericGpioManager<B> {
     pub fn new(config: Arc<AppConfig>, backend: Arc<B>) -> Self {
         let (event_tx, _) = broadcast::channel(config.broadcast_capacity);
-        let mut history = HashMap::new();
+        let mut history = FxHashMap::default();
         for id in config.gpios.keys() {
             history.insert(id.clone(), RwLock::new(VecDeque::new()));
         }

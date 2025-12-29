@@ -1,6 +1,7 @@
 use crate::error::AppError;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HttpConfig {
@@ -49,7 +50,7 @@ pub struct PinConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     pub http: HttpConfig,
-    pub gpios: HashMap<u32, PinConfig>,
+    pub gpios: FxHashMap<u32, PinConfig>,
     pub broadcast_capacity: usize,
     pub event_history_capacity: usize,
 }

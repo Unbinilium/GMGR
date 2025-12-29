@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -7,6 +6,7 @@ use std::time::Duration;
 
 use libgpiod::{chip::Chip, line, line::EventClock, request};
 use parking_lot::{FairMutex, RwLock as PLRwLock, RwLockUpgradableReadGuard};
+use rustc_hash::FxHashMap;
 
 use crate::config::{EdgeDetect, PinConfig};
 use crate::error::AppError;
@@ -16,7 +16,7 @@ const LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY: usize = 64;
 const LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS: Duration = Duration::from_millis(10);
 
 pub struct LibgpiodBackend {
-    pins: PLRwLock<HashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
+    pins: PLRwLock<FxHashMap<u32, RwLock<PinHandle>>>, // keyed by pin id
 }
 
 struct PinHandle {
@@ -151,7 +151,7 @@ impl Drop for EdgeListener {
 impl LibgpiodBackend {
     pub fn new() -> Result<Self, AppError> {
         Ok(Self {
-            pins: PLRwLock::new(HashMap::new()),
+            pins: PLRwLock::new(FxHashMap::default()),
         })
     }
 

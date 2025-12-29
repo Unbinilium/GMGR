@@ -24,12 +24,12 @@ impl GpioBackend for MockGpioBackend {
         let pins = self
             .pins
             .read()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if let Some(pin_lock) = pins.get(&pin_id) {
             let pin = pin_lock
                 .read()
-                .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+                .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
             Ok(pin.settings.clone())
         } else {
             Ok(PinSettings::default())
@@ -46,7 +46,7 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         let entry = pins.entry(pin_id).or_insert_with(|| {
             RwLock::new(MockPinState {
@@ -59,7 +59,7 @@ impl GpioBackend for MockGpioBackend {
 
         let mut pin = entry
             .write()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         pin.settings = settings.clone();
         if settings.state == GpioState::Disabled {
@@ -79,17 +79,17 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let entry = pins
             .get_mut(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let pin = entry
             .read()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if pin.settings.state == GpioState::Disabled {
             return Err(AppError::InvalidState(
-                "Pin is disabled and cannot be read".into(),
+                "pin is disabled and cannot be read".into(),
             ));
         }
         Ok(pin.value)
@@ -99,17 +99,17 @@ impl GpioBackend for MockGpioBackend {
         let mut pins = self
             .pins
             .write()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
         let entry = pins
             .get_mut(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let mut pin = entry
             .write()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if !pin.settings.state.is_writable() {
             return Err(AppError::InvalidState(
-                "Pin must be in output mode to set value".into(),
+                "pin must be in output mode to set value".into(),
             ));
         }
 
@@ -120,23 +120,22 @@ impl GpioBackend for MockGpioBackend {
             (0, 1) => Some(EdgeDetect::Rising),
             (1, 0) => Some(EdgeDetect::Falling),
             _ => None,
-        } {
-            if edge_matches(pin.settings.edge, edge_kind) {
-                let now = Instant::now();
-                let debounce = pin.settings.debounce_ms;
-                let allow = pin
-                    .last_event
-                    .map(|t| now.duration_since(t).as_millis() >= debounce as u128)
-                    .unwrap_or(true);
-                if allow {
-                    pin.last_event = Some(now);
-                    if let Some(h) = &pin.handler {
-                        h.dispatch(EdgeEvent {
-                            pin_id,
-                            edge: edge_kind,
-                            timestamp_ms: epoch_millis(),
-                        });
-                    }
+        } && edge_matches(pin.settings.edge, edge_kind)
+        {
+            let now = Instant::now();
+            let debounce = pin.settings.debounce_ms;
+            let allow = pin
+                .last_event
+                .map(|t| now.duration_since(t).as_millis() >= debounce as u128)
+                .unwrap_or(true);
+            if allow {
+                pin.last_event = Some(now);
+                if let Some(h) = &pin.handler {
+                    h.dispatch(EdgeEvent {
+                        pin_id,
+                        edge: edge_kind,
+                        timestamp_ms: epoch_millis(),
+                    });
                 }
             }
         }

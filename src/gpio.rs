@@ -120,7 +120,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
         let mut history = FxHashMap::default();
         for id in config.gpios.keys() {
-            history.insert(id.clone(), RwLock::new(VecDeque::new()));
+            history.insert(*id, RwLock::new(VecDeque::new()));
         }
 
         let event_handler = Arc::new(EventCallbackHandler::new(
@@ -162,7 +162,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
             .map(|(id, cfg)| {
                 let settings = self.backend.get_settings(*id).unwrap_or_default();
                 (
-                    id.clone(),
+                    *id,
                     PinDescriptor {
                         info: cfg.clone(),
                         settings,
@@ -200,14 +200,14 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
         if !Self::capability_matches(settings.state, &cfg.capabilities) {
             return Err(AppError::InvalidState(format!(
-                "State not supported by pin {pin_id}"
+                "state not supported by pin {pin_id}"
             )));
         }
 
         let handler = if settings.edge != EdgeDetect::None {
             if !settings.state.is_edge_detectable() {
                 return Err(AppError::InvalidState(format!(
-                    "Edge detection requires an input-capable state by pin {pin_id}",
+                    "edge detection requires an input-capable state by pin {pin_id}",
                 )));
             }
             Some(self.event_handler.clone())
@@ -215,7 +215,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
             None
         };
 
-        self.backend.set_settings(pin_id, cfg, &settings, handler)
+        self.backend.set_settings(pin_id, cfg, settings, handler)
     }
 
     pub async fn read_value(&self, pin_id: u32) -> Result<u8, AppError> {
@@ -226,7 +226,7 @@ impl<B: GpioBackend> GenericGpioManager<B> {
 
     pub async fn write_value(&self, pin_id: u32, value: u8) -> Result<(), AppError> {
         if value > 1 {
-            return Err(AppError::InvalidValue("Value must be 0 or 1".into()));
+            return Err(AppError::InvalidValue("value must be 0 or 1".into()));
         }
 
         self.pin_config(pin_id)?;

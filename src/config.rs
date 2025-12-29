@@ -28,17 +28,13 @@ pub enum GpioCapability {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum EdgeDetect {
+    #[default]
     None,
     Rising,
     Falling,
     Both,
-}
-
-impl Default for EdgeDetect {
-    fn default() -> Self {
-        EdgeDetect::None
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -60,8 +56,8 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, AppError> {
         let contents = fs::read_to_string(&path)
-            .map_err(|e| AppError::Config(format!("Failed to read config: {e}")))?;
+            .map_err(|e| AppError::Config(format!("failed to read config: {e}")))?;
         serde_json::from_str(&contents)
-            .map_err(|e| AppError::Config(format!("Invalid config json: {e}")))
+            .map_err(|e| AppError::Config(format!("invalid config json: {e}")))
     }
 }

@@ -56,17 +56,17 @@ impl GpiodHandle {
 
     fn open_chip(path: &str) -> Result<Chip, AppError> {
         let p = PathBuf::from(path);
-        Chip::open(&p).map_err(|e| AppError::Gpio(format!("Open chip {path}: {e}")))
+        Chip::open(&p).map_err(|e| AppError::Gpio(format!("open chip {path}: {e}")))
     }
 
     fn request_lines(chip: &Chip, line_cfg: &line::Config) -> Result<request::Request, AppError> {
         let mut req_cfg =
-            request::Config::new().map_err(|e| AppError::Gpio(format!("Request config: {e}")))?;
+            request::Config::new().map_err(|e| AppError::Gpio(format!("request config: {e}")))?;
         req_cfg
             .set_consumer(env!("CARGO_PKG_NAME"))
-            .map_err(|e| AppError::Gpio(format!("Request consumer: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("request consumer: {e}")))?;
         chip.request_lines(Some(&req_cfg), line_cfg)
-            .map_err(|e| AppError::Gpio(format!("Request lines: {e}")))
+            .map_err(|e| AppError::Gpio(format!("request lines: {e}")))
     }
 }
 
@@ -84,7 +84,7 @@ impl EdgeListener {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_flag = cancel.clone();
         let mut buffer = request::Buffer::new(LIBGPIOD_BACKEND_EVENT_BUFFER_CAPACITY)
-            .map_err(|e| AppError::Gpio(format!("Event buffer: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("event buffer: {e}")))?;
 
         let handle = std::thread::spawn(move || {
             while !cancel_flag.load(Ordering::Relaxed) {
@@ -95,7 +95,7 @@ impl EdgeListener {
                     match req.wait_edge_events(Some(LIBGPIOD_BACKEND_EVENT_WAIT_TIMEOUT_MS)) {
                         Ok(v) => v,
                         Err(e) => {
-                            warn!("Wait edge events error for pin {pin_id}: {e}");
+                            warn!("wait edge events error for pin {pin_id}: {e}");
                             yield_now();
                             continue;
                         }
@@ -107,7 +107,7 @@ impl EdgeListener {
                 let events = match req.read_edge_events(&mut buffer) {
                     Ok(evts) => evts,
                     Err(e) => {
-                        warn!("Read edge events error for pin {pin_id}: {e}");
+                        warn!("read edge events error for pin {pin_id}: {e}");
                         yield_now();
                         continue;
                     }
@@ -124,7 +124,7 @@ impl EdgeListener {
                     };
 
                     handler.dispatch(EdgeEvent {
-                        pin_id: pin_id.clone(),
+                        pin_id,
                         edge: edge_kind,
                         timestamp_ms: evt.timestamp().as_millis() as u64,
                     });
@@ -157,20 +157,18 @@ impl LibgpiodBackend {
 
     fn validate_pin_settings(settings: &PinSettings) -> Result<(), AppError> {
         match settings.state {
-            GpioState::Error => {
-                return Err(AppError::InvalidState(
-                    "Cannot set pin to error state".into(),
-                ));
-            }
+            GpioState::Error => Err(AppError::InvalidState(
+                "cannot set pin to error state".into(),
+            )),
             GpioState::Disabled => {
                 if settings.edge != EdgeDetect::None {
                     return Err(AppError::InvalidState(
-                        "Cannot set edge detection on disabled pin".into(),
+                        "cannot set edge detection on disabled pin".into(),
                     ));
                 }
                 if settings.debounce_ms != 0 {
                     return Err(AppError::InvalidState(
-                        "Cannot set debounce on disabled pin".into(),
+                        "cannot set debounce on disabled pin".into(),
                     ));
                 }
                 Ok(())
@@ -180,14 +178,14 @@ impl LibgpiodBackend {
                     EdgeDetect::None => {
                         if settings.debounce_ms != 0 {
                             return Err(AppError::InvalidState(
-                                "Debounce requires edge detection to be enabled".into(),
+                                "debouncing requires edge detection to be enabled".into(),
                             ));
                         }
                     }
                     _ => {
                         if !settings.state.is_edge_detectable() {
                             return Err(AppError::InvalidState(
-                                "Edge detection requires an input-capable state".into(),
+                                "edge detection requires an input-capable state".into(),
                             ));
                         }
                     }
@@ -198,50 +196,50 @@ impl LibgpiodBackend {
     }
 
     fn make_line_settings(settings: &PinSettings) -> Result<line::Settings, AppError> {
-        let mut ls = line::Settings::new()
-            .map_err(|e| AppError::Gpio(format!("Settings for libgpiod: {e}")))?;
+        let mut ls =
+            line::Settings::new().map_err(|e| AppError::Gpio(format!("libgpiod settings: {e}")))?;
 
         match settings.state {
             GpioState::Error | GpioState::Disabled => {
                 return Err(AppError::InvalidState(
-                    "Cannot create settings for error or disabled state".into(),
+                    "cannot create settings for error or disabled state".into(),
                 ));
             }
             GpioState::PushPull => {
                 ls.set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_drive(line::Drive::PushPull)
-                    .map_err(|e| AppError::Gpio(format!("Drive: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set drive: {e}")))?;
             }
             GpioState::OpenDrain => {
                 ls.set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_drive(line::Drive::OpenDrain)
-                    .map_err(|e| AppError::Gpio(format!("Drive: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set drive: {e}")))?;
             }
             GpioState::OpenSource => {
                 ls.set_direction(line::Direction::Output)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_drive(line::Drive::OpenSource)
-                    .map_err(|e| AppError::Gpio(format!("Drive: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set drive: {e}")))?;
             }
             GpioState::Floating => {
                 ls.set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_bias(None)
-                    .map_err(|e| AppError::Gpio(format!("Bias: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set bias: {e}")))?;
             }
             GpioState::PullUp => {
                 ls.set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_bias(Some(line::Bias::PullUp))
-                    .map_err(|e| AppError::Gpio(format!("Bias: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set bias: {e}")))?;
             }
             GpioState::PullDown => {
                 ls.set_direction(line::Direction::Input)
-                    .map_err(|e| AppError::Gpio(format!("Direction: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set direction: {e}")))?;
                 ls.set_bias(Some(line::Bias::PullDown))
-                    .map_err(|e| AppError::Gpio(format!("Bias: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("set bias: {e}")))?;
             }
         }
 
@@ -253,9 +251,9 @@ impl LibgpiodBackend {
                 EdgeDetect::Both => Some(line::Edge::Both),
             };
             ls.set_edge_detection(edge)
-                .map_err(|e| AppError::Gpio(format!("Edge detection: {e}")))?;
+                .map_err(|e| AppError::Gpio(format!("set edge detection: {e}")))?;
             ls.set_event_clock(EventClock::Realtime)
-                .map_err(|e| AppError::Gpio(format!("Event clock: {e}")))?;
+                .map_err(|e| AppError::Gpio(format!("set event clock: {e}")))?;
             ls.set_debounce_period(Duration::from_millis(settings.debounce_ms));
         }
 
@@ -264,9 +262,9 @@ impl LibgpiodBackend {
 
     fn make_line_config(offset: u32, settings: line::Settings) -> Result<line::Config, AppError> {
         let mut cfg =
-            line::Config::new().map_err(|e| AppError::Gpio(format!("Line config: {e}")))?;
+            line::Config::new().map_err(|e| AppError::Gpio(format!("line config: {e}")))?;
         cfg.add_line_settings(&[offset], settings)
-            .map_err(|e| AppError::Gpio(format!("Line config add settings: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("line config add settings: {e}")))?;
         Ok(cfg)
     }
 }
@@ -280,7 +278,7 @@ impl GpioBackend for LibgpiodBackend {
             Some(handle_lock) => {
                 let handle = handle_lock
                     .read()
-                    .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
                 Ok(handle.settings.clone())
             }
         }
@@ -298,8 +296,10 @@ impl GpioBackend for LibgpiodBackend {
                             gpiod_handle: &Arc<FairMutex<GpiodHandle>>,
                             handler: Option<EventHandler>|
          -> Result<Option<EdgeListener>, AppError> {
-            if edge != EdgeDetect::None && handler.is_some() {
-                let listener = EdgeListener::new(pin_id, gpiod_handle.clone(), handler.unwrap())?;
+            if edge != EdgeDetect::None
+                && let Some(handler) = handler
+            {
+                let listener = EdgeListener::new(pin_id, gpiod_handle.clone(), handler)?;
                 Ok(Some(listener))
             } else {
                 Ok(None)
@@ -312,7 +312,7 @@ impl GpioBackend for LibgpiodBackend {
 
         // fast path for disabling pin
         if settings.state == GpioState::Disabled {
-            if let Some(_) = pins.get(&pin_id) {
+            if pins.get(&pin_id).is_some() {
                 let _ = RwLockUpgradableReadGuard::upgrade(pins).remove(&pin_id);
             }
             return Ok(());
@@ -322,7 +322,7 @@ impl GpioBackend for LibgpiodBackend {
             Some(handle) => {
                 let mut handle = handle
                     .write()
-                    .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
                 // drop listener if disabling edge detection before reconfiguring lines
                 if settings.edge == EdgeDetect::None
@@ -339,7 +339,7 @@ impl GpioBackend for LibgpiodBackend {
                     .lock()
                     .request
                     .reconfigure_lines(&line_cfg)
-                    .map_err(|e| AppError::Gpio(format!("Reconfigure lines: {e}")))?;
+                    .map_err(|e| AppError::Gpio(format!("reconfigure lines: {e}")))?;
 
                 if handle.listener.is_none() {
                     handle.listener =
@@ -377,17 +377,17 @@ impl GpioBackend for LibgpiodBackend {
         let pins = self.pins.read();
         let handle_lock = pins
             .get(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let handle = handle_lock
             .read()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         let value = handle
             .gpiod_handle
             .lock()
             .request
             .value(handle.line)
-            .map_err(|e| AppError::Gpio(format!("Get value: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("get value: {e}")))?;
         Ok(match value {
             line::Value::InActive => 0,
             line::Value::Active => 1,
@@ -398,14 +398,14 @@ impl GpioBackend for LibgpiodBackend {
         let pins = self.pins.read();
         let handle_lock = pins
             .get(&pin_id)
-            .ok_or_else(|| AppError::InvalidState("Pin not configured, set state first".into()))?;
+            .ok_or_else(|| AppError::InvalidState("pin not configured, set state first".into()))?;
         let handle = handle_lock
             .read()
-            .map_err(|e| AppError::Gpio(format!("Lock poisoned: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("lock poisoned: {e}")))?;
 
         if !handle.settings.state.is_writable() {
             return Err(AppError::InvalidState(
-                "Pin must be in output mode to set value".into(),
+                "pin must be in output mode to set value".into(),
             ));
         }
 
@@ -423,7 +423,7 @@ impl GpioBackend for LibgpiodBackend {
                     _ => line::Value::InActive,
                 },
             )
-            .map_err(|e| AppError::Gpio(format!("Set value: {e}")))?;
+            .map_err(|e| AppError::Gpio(format!("set value: {e}")))?;
         Ok(())
     }
 }

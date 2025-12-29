@@ -22,7 +22,7 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or_else(|| "config.json".to_string());
     let config = Arc::new(
         AppConfig::load_from_file(&config_path)
-            .unwrap_or_else(|e| panic!("Failed to load config: {e}")),
+            .unwrap_or_else(|e| panic!("failed to load config: {e}")),
     );
 
     let backend = {
@@ -30,7 +30,7 @@ async fn main() -> std::io::Result<()> {
         {
             Arc::new(
                 LibgpiodBackend::new()
-                    .unwrap_or_else(|e| panic!("Failed to init libgpiod backend: {e}")),
+                    .unwrap_or_else(|e| panic!("failed to init libgpiod backend: {e}")),
             )
         }
         #[cfg(not(feature = "hardware-gpio"))]
@@ -75,11 +75,11 @@ async fn main() -> std::io::Result<()> {
             server.bind_auto_h2c(host)?
         }
         _ => {
-            panic!("Config error: either 'unix_socket' or both 'host' and 'port' must be specified")
+            panic!("config error: either 'unix_socket' or both 'host' and 'port' must be specified")
         }
     };
 
-    info!("Starting server on {}...", bind_addrs);
+    info!("GMGR server starting on {}...", bind_addrs);
 
     server.run().await
 }

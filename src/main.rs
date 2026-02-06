@@ -1,5 +1,6 @@
 use log::info;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -78,6 +79,13 @@ async fn main() -> std::io::Result<()> {
             panic!("config error: either 'unix_socket' or both 'host' and 'port' must be specified")
         }
     };
+
+    if let Some(socket_path) = &config.http.unix_socket {
+        if let Some(mode) = config.http.socket_mode() {
+            fs::set_permissions(socket_path, fs::Permissions::from_mode(mode))?;
+            info!("Set unix socket permissions to {:o}", mode);
+        }
+    }
 
     info!("GMGR server starting on {}...", bind_addrs);
 
